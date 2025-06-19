@@ -37,12 +37,23 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     try:
         logger.info(f"🌱 Starting vegetation analysis - Request ID: {context.aws_request_id}")
+        logger.info(f"📥 Input event: {json.dumps(event)[:500]}...")  # Log first 500 chars
         
-        # Parse input from API Gateway event
-        if isinstance(event.get('body'), str):
-            body = json.loads(event['body'])
+        # Parse input - handle both API Gateway and Step Functions
+        if 'body' in event and event['body']:
+            # API Gateway format
+            if isinstance(event['body'], str):
+                body = json.loads(event['body'])
+            else:
+                body = event['body']
+            is_api_gateway = True
         else:
-            body = event.get('body', {})
+            # Direct invocation (Step Functions) - event IS the body
+            body = event
+            is_api_gateway = False
+            
+        logger.info(f"🔍 Parsed body: {json.dumps(body)}")
+        logger.info(f"📡 Invocation source: {'API Gateway' if is_api_gateway else 'Step Functions'}")
             
         # Validate required parameters
         required_fields = ['imageId', 'redBandUrl', 'nirBandUrl', 'outputBucket']
@@ -77,9 +88,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Upload results to S3
         logger.info("☁️ Uploading results to S3...")
         s3_output_path = s3_handler.upload_ndvi_result(
-            ndvi_data=ndvi_result['ndvi_array'],
-            profile=ndvi_result['profile'],
-            image_id=image_id
+            image_id=image_id,
+            statistics=ndvi_result['statistics']
         )
         
         # Calculate processing time
@@ -99,14 +109,19 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.info(f"📊 NDVI Stats: mean={ndvi_result['statistics']['mean_ndvi']:.3f}, "
                    f"vegetation={ndvi_result['statistics']['vegetation_coverage']:.1f}%")
         
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps(response_data)
-        }
+        if is_api_gateway:
+            # API Gateway response format
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps(response_data)
+            }
+        else:
+            # Step Functions response format - return data directly
+            return response_data
         
     except Exception as e:
         processing_time_ms = int((time.time() - start_time) * 1000)
@@ -115,15 +130,25 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.error(f"❌ Vegetation analysis failed: {error_message}")
         logger.error(f"⏱️ Failed after {processing_time_ms}ms")
         
-        return {
-            'statusCode': 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({
-                'success': False,
-                'error': error_message,
-                'processing_time_ms': processing_time_ms
-            })
-        } 
+        error_response = {
+            'success': False,
+            'error': error_message,
+            'processing_time_ms': processing_time_ms
+        }
+        
+        # Check if this was an API Gateway or Step Functions invocation
+        is_api_gateway = 'body' in event and event['body']
+        
+        if is_api_gateway:
+            # API Gateway error response
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps(error_response)
+            }
+        else:
+            # Step Functions error response - return error data directly
+            return error_response 

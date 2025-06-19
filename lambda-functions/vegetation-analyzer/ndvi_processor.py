@@ -61,19 +61,8 @@ class VegetationProcessor:
                     logger.info(f"🧩 Processing image in {self.chunk_size}x{self.chunk_size} chunks...")
                     statistics = self._calculate_ndvi_chunked(red_src, nir_src)
                     
-                    # Create minimal profile for output (no actual array data)
-                    profile = red_src.profile.copy()
-                    profile.update({
-                        'dtype': 'float32',
-                        'count': 1,
-                        'compress': 'lzw',
-                        'nodata': -9999
-                    })
-                    
                     return {
-                        'ndvi_array': None,  # Don't return huge array - just stats
                         'statistics': statistics,
-                        'profile': profile,
                         'crs': str(red_src.crs),
                         'bounds': red_src.bounds
                     }

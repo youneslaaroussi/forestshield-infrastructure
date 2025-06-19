@@ -44,6 +44,7 @@ echo "📦 Creating S3 buckets..."
 aws s3 mb s3://forestshield-processed-data-$ACCOUNT_ID || echo "Bucket already exists"
 aws s3 mb s3://forestshield-models-$ACCOUNT_ID || echo "Bucket already exists"
 aws s3 mb s3://forestshield-temp-$ACCOUNT_ID || echo "Bucket already exists"
+aws s3 mb s3://forestshield-lambda-deployments-$ACCOUNT_ID || echo "Bucket already exists"
 
 # Create IAM roles
 echo "🔐 Creating IAM roles..."
@@ -133,11 +134,50 @@ aws iam attach-role-policy \
 echo "⏳ Waiting for IAM roles to propagate..."
 sleep 10
 
-# Build Java Lambda functions
+# --- Build Python Lambda First ---
+# The Python build uses Docker and is the most likely to fail.
+# We build it first to ensure the deployment package exists before proceeding.
+echo "🐍 Building Python Vegetation Analyzer (Docker required)..."
+if [ -d "lambda-functions/vegetation-analyzer" ]; then
+    (
+        cd lambda-functions/vegetation-analyzer
+        if [ -f "build.sh" ]; then
+            echo "   Running build.sh in $(pwd)..."
+            chmod +x build.sh
+            if ! ./build.sh; then
+                echo "❌ Python build script failed."
+                exit 1
+            fi
+            
+            if [ ! -f "vegetation-analyzer-deployment.zip" ]; then
+                echo "❌ Build script ran but vegetation-analyzer-deployment.zip was not created."
+                exit 1
+            fi
+            echo "   ✅ Python Lambda built successfully."
+        else
+            echo "❌ build.sh not found in lambda-functions/vegetation-analyzer/"
+            exit 1
+        fi
+    )
+else
+    echo "❌ Directory lambda-functions/vegetation-analyzer not found."
+    exit 1
+fi
+
+# --- Build Java Lambda functions ---
 echo "🔨 Building Java Lambda functions..."
-cd lambda-functions
-chmod +x build-all.sh
-./build-all.sh
+(
+    cd lambda-functions
+    # Temporarily comment out the Python build step from the build-all script
+    # as we have already built it.
+    sed -i.bak '/# --- Build Python Vegetation Analyzer ---/,/cd .. # Return to lambda-functions directory/s/^/#/' build-all.sh
+    
+    chmod +x build-all.sh
+    ./build-all.sh
+    
+    # Restore the original build-all.sh
+    mv build-all.sh.bak build-all.sh
+)
 
 # Function to deploy Lambda function
 deploy_lambda_function() {
@@ -148,6 +188,7 @@ deploy_lambda_function() {
     local memory=$5
     local env_vars=$6
     local layers=$7
+    local runtime=$8
     local jar_size_bytes
     local jar_size_mb
     local max_direct_upload_mb
@@ -220,15 +261,22 @@ deploy_lambda_function() {
             layers_config="--layers $layers"
         fi
         
+        # Set runtime and snap-start based on runtime type
+        local runtime_config="--runtime ${runtime:-java17}"
+        local snapstart_config=""
+        if [[ "${runtime:-java17}" == java* ]]; then
+            snapstart_config="--snap-start ApplyOn=PublishedVersions"
+        fi
+        
         aws lambda create-function \
             --function-name "$function_name" \
-            --runtime java17 \
+            $runtime_config \
             --role "$LAMBDA_ROLE_ARN" \
             --handler "$handler" \
             $create_code_param \
             --timeout "$timeout" \
             --memory-size "$memory" \
-            --snap-start ApplyOn=PublishedVersions \
+            $snapstart_config \
             $env_config \
             $layers_config
     fi
@@ -240,112 +288,128 @@ LAMBDA_ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/ForestShieldLambdaRole"
 
 # Deploy Vegetation Analyzer (Python)
 echo "🐍 Deploying Python Vegetation Analyzer..."
-cd vegetation-analyzer
-
-# Check if deployment package exists
-if [ ! -f "vegetation-analyzer-deployment.zip" ]; then
-    echo "❌ vegetation-analyzer-deployment.zip not found. Run build script first."
-    exit 1
-fi
-
-# Deploy Python Lambda function
 deploy_lambda_function \
     "forestshield-vegetation-analyzer" \
     "handler.lambda_handler" \
-    "vegetation-analyzer-deployment.zip" \
+    "lambda-functions/vegetation-analyzer/vegetation-analyzer-deployment.zip" \
     300 \
     2048 \
     "{GDAL_DATA=/opt/share/gdal,PROJ_LIB=/opt/share/proj,PROCESSED_DATA_BUCKET=forestshield-processed-data-$ACCOUNT_ID,TEMP_BUCKET=forestshield-temp-$ACCOUNT_ID}" \
-    "arn:aws:lambda:us-west-2:524387336408:layer:gdal38:4"
+    "arn:aws:lambda:us-west-2:524387336408:layer:gdal38:4" \
+    "python3.9"
 
-# Deploy Search Images
-cd ../search-images
+# Deploy Search Images (Java)
+echo "🔍 Deploying Java Search Images..."
 deploy_lambda_function \
     "forestshield-search-images" \
     "com.forestshield.SearchImagesHandler::handleRequest" \
-    "target/search-images-1.0.0.jar" \
+    "lambda-functions/search-images/target/search-images-1.0.0.jar" \
     60 \
-    512
+    512 \
+    "" \
+    "" \
+    "java17"
 
-# Deploy SageMaker Processor
-cd ../sagemaker-processor
+# Deploy SageMaker Processor (Java)
+echo "🧠 Deploying Java SageMaker Processor..."
 deploy_lambda_function \
     "forestshield-sagemaker-processor" \
     "com.forestshield.SageMakerProcessorHandler::handleRequest" \
-    "target/sagemaker-processor-1.0.0.jar" \
+    "lambda-functions/sagemaker-processor/target/sagemaker-processor-1.0.0.jar" \
     300 \
-    1024
+    1024 \
+    "" \
+    "" \
+    "java17"
 
 # Create SNS topic for alerts
 echo "📢 Creating SNS topic for deforestation alerts..."
 SNS_TOPIC_ARN=$(aws sns create-topic --name deforestation-alerts --query TopicArn --output text)
 echo "✅ SNS Topic ARN: $SNS_TOPIC_ARN"
 
-# Create Step Functions state machine
-echo "🔄 Creating Step Functions workflow..."
-cd ../step-functions
+# Create or Update Step Functions state machine
+echo "🔄 Creating/Updating Step Functions workflow..."
 STEP_FUNCTIONS_ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/ForestShieldStepFunctionsRole"
+STATE_MACHINE_JSON_PATH="lambda-functions/step-functions/deforestation-detection-workflow.json"
+STATE_MACHINE_ARN="arn:aws:states:$REGION:$ACCOUNT_ID:stateMachine:forestshield-pipeline"
 
 # Update the state machine definition with actual ARNs
 sed -i.bak \
   -e "s/ACCOUNT_ID/$ACCOUNT_ID/g" \
   -e "s/REGION/$REGION/g" \
-  deforestation-detection-workflow.json
+  "$STATE_MACHINE_JSON_PATH"
 
-aws stepfunctions create-state-machine \
-  --name forestshield-pipeline \
-  --definition file://deforestation-detection-workflow.json \
-  --role-arn $STEP_FUNCTIONS_ROLE_ARN || echo "State machine already exists"
+if aws stepfunctions describe-state-machine --state-machine-arn "$STATE_MACHINE_ARN" &>/dev/null; then
+    echo "   State machine exists, updating..."
+    aws stepfunctions update-state-machine \
+        --state-machine-arn "$STATE_MACHINE_ARN" \
+        --definition "file://$STATE_MACHINE_JSON_PATH" \
+        --role-arn "$STEP_FUNCTIONS_ROLE_ARN"
+else
+    echo "   Creating new state machine..."
+    aws stepfunctions create-state-machine \
+      --name forestshield-pipeline \
+      --definition "file://$STATE_MACHINE_JSON_PATH" \
+      --role-arn "$STEP_FUNCTIONS_ROLE_ARN"
+fi
+
+aws iam update-assume-role-policy \
+  --role-name forestshield-lambda-role \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Service": [
+            "lambda.amazonaws.com",
+            "sagemaker.amazonaws.com"
+          ]
+        },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  }'
+
+aws iam put-role-policy \
+  --role-name forestshield-lambda-role \
+  --policy-name AllowPassSageMakerRole \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": "iam:PassRole",
+        "Resource": "arn:aws:iam::381492060635:role/forestshield-sagemaker-role"
+      }
+    ]
+  }'
+
+aws iam put-role-policy \
+  --role-name forestshield-sagemaker-role \
+  --policy-name SageMakerS3Access \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject"
+        ],
+        "Resource": "arn:aws:s3:::forestshield-processed-data-381492060635/*"
+      },
+      {
+        "Effect": "Allow",
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::forestshield-processed-data-381492060635"
+      }
+    ]
+  }'
+
 
 # Get final ARNs
-STEP_FUNCTION_ARN=$(aws stepfunctions describe-state-machine --state-machine-arn "arn:aws:states:$REGION:$ACCOUNT_ID:stateMachine:forestshield-pipeline" --query stateMachineArn --output text)
-
-# Create environment file for NestJS
-cd ../../
-cat > .env.production << EOF
-# 🌳 ForestShield Production Environment Variables
-# Generated by deployment script on $(date)
-
-# AWS Configuration
-AWS_REGION=$REGION
-AWS_ACCOUNT_ID=$ACCOUNT_ID
-
-# S3 Buckets
-FORESTSHIELD_DATA_BUCKET=forestshield-processed-data-$ACCOUNT_ID
-FORESTSHIELD_MODELS_BUCKET=forestshield-models-$ACCOUNT_ID
-FORESTSHIELD_TEMP_BUCKET=forestshield-temp-$ACCOUNT_ID
-
-# Lambda Function ARNs
-LAMBDA_VEGETATION_ANALYZER_ARN=arn:aws:lambda:$REGION:$ACCOUNT_ID:function:forestshield-vegetation-analyzer
-LAMBDA_SEARCH_IMAGES_ARN=arn:aws:lambda:$REGION:$ACCOUNT_ID:function:forestshield-search-images
-LAMBDA_SAGEMAKER_PROCESSOR_ARN=arn:aws:lambda:$REGION:$ACCOUNT_ID:function:forestshield-sagemaker-processor
-
-# SageMaker
-SAGEMAKER_EXECUTION_ROLE_ARN=arn:aws:iam::$ACCOUNT_ID:role/ForestShieldSageMakerRole
-
-# Step Functions
-STEP_FUNCTIONS_STATE_MACHINE_ARN=$STEP_FUNCTION_ARN
-
-# SNS for Alerts
-SNS_DEFORESTATION_ALERTS_ARN=$SNS_TOPIC_ARN
-
-# Production Mode
-NODE_ENV=production
-USE_REAL_AWS=true
-EOF
+STEP_FUNCTION_ARN=$(aws stepfunctions describe-state-machine --state-machine-arn "$STATE_MACHINE_ARN" --query stateMachineArn --output text)
 
 echo ""
 echo "🎉 ForestShield AWS deployment completed successfully!"
 echo ""
-echo "📋 Next Steps:"
-echo "1. Copy .env.production to your server"
-echo "2. Subscribe to SNS topic for alerts: $SNS_TOPIC_ARN"
-echo "3. Test the API endpoints"
-echo "4. Monitor CloudWatch logs"
-echo ""
-echo "🔗 Useful ARNs:"
-echo "   Step Functions: $STEP_FUNCTION_ARN"
-echo "   SNS Topic: $SNS_TOPIC_ARN"
-echo ""
-echo "💰 Estimated daily cost: < $5"
-echo "📊 Monitor usage in AWS Cost Explorer" 

@@ -67,7 +67,7 @@ export class DashboardService {
     return result.Item as RegionDto;
   }
 
-  async updateRegion(id: string, updateData: Partial<CreateRegionDto>): Promise<RegionDto> {
+  async updateRegion(id: string, updateData: Partial<RegionDto>): Promise<RegionDto> {
     const keys = Object.keys(updateData);
     const command = new UpdateCommand({
       TableName: this.regionsTable,

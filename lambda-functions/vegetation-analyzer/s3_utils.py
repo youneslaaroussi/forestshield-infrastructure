@@ -28,100 +28,74 @@ class S3Handler:
         self.s3_client = boto3.client('s3')
         logger.info(f"🪣 Initialized S3Handler for bucket: {bucket_name}")
     
-    def upload_ndvi_result(self, ndvi_data: np.ndarray, profile: Dict[str, Any], 
-                          image_id: str) -> str:
+    def upload_ndvi_result(self, image_id: str, statistics: Dict[str, Any] = None) -> str:
         """
         Upload NDVI statistics as JSON to S3
         
         Args:
-            ndvi_data: NDVI statistics (not array anymore)
-            profile: Rasterio profile for reference
             image_id: Unique image identifier
+            statistics: NDVI statistics dictionary
             
         Returns:
             S3 path to uploaded file
         """
         
-        # If ndvi_data is None (from chunked processing), just upload metadata
-        if ndvi_data is None:
-            logger.info(f"📊 Uploading NDVI statistics only (no array data) for {image_id}")
-            return self.upload_ndvi_statistics_only(image_id)
-        
-        # Legacy path for full array upload (should not be used with chunked processing)
-        # Generate S3 key with timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        s3_key = f"ndvi/{timestamp}/{image_id}_ndvi.tif"
-        
-        logger.info(f"☁️ Uploading NDVI result to s3://{self.bucket_name}/{s3_key}")
-        
-        try:
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp_file:
-                tmp_path = tmp_file.name
-                
-                # Write NDVI data as GeoTIFF
-                with rasterio.open(tmp_path, 'w', **profile) as dst:
-                    dst.write(ndvi_data, 1)
-                    
-                    # Add metadata
-                    dst.update_tags(
-                        PROCESSING_SOFTWARE='ForestShield-VegetationAnalyzer',
-                        PROCESSING_DATE=datetime.now().isoformat(),
-                        IMAGE_ID=image_id,
-                        NDVI_DESCRIPTION='Normalized Difference Vegetation Index',
-                        VEGETATION_THRESHOLD='0.3',
-                        NODATA_VALUE='-9999'
-                    )
-                
-                # Upload to S3
-                self.s3_client.upload_file(
-                    tmp_path, 
-                    self.bucket_name, 
-                    s3_key,
-                    ExtraArgs={
-                        'ContentType': 'image/tiff',
-                        'Metadata': {
-                            'image-id': image_id,
-                            'processing-date': datetime.now().isoformat(),
-                            'content-type': 'ndvi-geotiff'
-                        }
-                    }
-                )
-                
-                # Clean up temporary file
-                os.unlink(tmp_path)
-                
-                s3_path = f"s3://{self.bucket_name}/{s3_key}"
-                logger.info(f"✅ NDVI uploaded successfully to {s3_path}")
-                
-                return s3_path
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to upload NDVI to S3: {str(e)}")
-            # Clean up temp file if it exists
-            if 'tmp_path' in locals() and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-            raise RuntimeError(f"S3 upload failed: {str(e)}")
+        return self.upload_ndvi_statistics_only(image_id, statistics)
     
-    def upload_ndvi_statistics_only(self, image_id: str) -> str:
+    def upload_ndvi_statistics_only(self, image_id: str, statistics: Dict[str, Any] = None) -> str:
         """
-        Upload placeholder statistics file when processing in chunked mode
+        Upload NDVI statistics as JSON file when processing in chunked mode
         
         Args:
             image_id: Unique image identifier
+            statistics: NDVI statistics dictionary to upload
             
         Returns:
-            S3 path indicating statistics-only processing
+            S3 path to uploaded statistics file
         """
         
-        # Just return a placeholder path since we're not uploading actual data
+        import json
+        
+        # Generate S3 key with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        s3_path = f"s3://{self.bucket_name}/ndvi-stats/{timestamp}/{image_id}_processed.json"
+        s3_key = f"ndvi-stats/{timestamp}/{image_id}_processed.json"
+        s3_path = f"s3://{self.bucket_name}/{s3_key}"
         
-        logger.info(f"📊 NDVI statistics calculated (no file upload in memory-optimized mode)")
-        logger.info(f"🎯 Processing completed for {image_id}")
+        logger.info(f"📊 Uploading NDVI statistics as JSON to {s3_path}")
         
-        return s3_path
+        try:
+            # Prepare statistics data for upload
+            upload_data = {
+                'image_id': image_id,
+                'processing_date': datetime.now().isoformat(),
+                'processing_mode': 'chunked_memory_optimized',
+                'statistics': statistics or {},
+                'metadata': {
+                    'processing_software': 'ForestShield-VegetationAnalyzer',
+                    'ndvi_description': 'Normalized Difference Vegetation Index Statistics',
+                    'vegetation_threshold': 0.3
+                }
+            }
+            
+            # Upload JSON statistics
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=s3_key,
+                Body=json.dumps(upload_data, indent=2),
+                ContentType='application/json',
+                Metadata={
+                    'image-id': image_id,
+                    'processing-date': datetime.now().isoformat(),
+                    'content-type': 'ndvi-statistics-json'
+                }
+            )
+            
+            logger.info(f"✅ NDVI statistics uploaded successfully to {s3_path}")
+            return s3_path
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to upload NDVI statistics to S3: {str(e)}")
+            raise RuntimeError(f"NDVI statistics upload failed: {str(e)}")
     
     def upload_metadata(self, metadata: Dict[str, Any], image_id: str) -> str:
         """

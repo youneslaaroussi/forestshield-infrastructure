@@ -97,3 +97,5 @@ lambda-functions/**/Dockerfile
 lambda-trust-policy.json
 sagemaker-trust-policy.json
 stepfunctions-trust-policy.json
+sagemaker-processor-deployment.zip
+vegetation-analyzer-deployment.zip

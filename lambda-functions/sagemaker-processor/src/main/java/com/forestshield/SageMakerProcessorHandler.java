@@ -21,7 +21,7 @@ import java.util.*;
  * Classifies deforestation patterns using unsupervised machine learning
  * Optimized with SnapStart for instant execution
  */
-public class SageMakerProcessorHandler implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent>, Resource {
+public class SageMakerProcessorHandler implements RequestHandler<Object, Object>, Resource {
     
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final SageMakerClient sageMakerClient = SageMakerClient.builder().build();
@@ -29,8 +29,8 @@ public class SageMakerProcessorHandler implements RequestHandler<APIGatewayProxy
     private static final SnsClient snsClient = SnsClient.builder().build();
     
     // SageMaker configuration
-    private static final String SAGEMAKER_ROLE_ARN = System.getenv("SAGEMAKER_ROLE_ARN");
-    private static final String S3_OUTPUT_BUCKET = System.getenv("S3_OUTPUT_BUCKET");
+    private static final String SAGEMAKER_ROLE_ARN = System.getenv("SAGEMAKER_ROLE");
+    private static final String DATA_BUCKET = System.getenv("DATA_BUCKET");
     private static final String SNS_TOPIC_ARN = System.getenv("SNS_TOPIC_ARN");
     
     // SnapStart initialization
@@ -53,12 +53,30 @@ public class SageMakerProcessorHandler implements RequestHandler<APIGatewayProxy
     }
     
     @Override
-    public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent event, Context context) {
+    public Object handleRequest(Object event, Context context) {
         try {
             System.out.println("Processing SageMaker K-means clustering request");
+            System.out.println("Input event type: " + event.getClass().getSimpleName());
             
-            // Parse request body
-            JsonNode requestBody = objectMapper.readTree(event.getBody());
+            JsonNode requestBody;
+            boolean isApiGateway = false;
+            
+            if (event instanceof APIGatewayProxyRequestEvent) {
+                // Invoked via API Gateway
+                APIGatewayProxyRequestEvent apiEvent = (APIGatewayProxyRequestEvent) event;
+                isApiGateway = true;
+                if (apiEvent.getBody() != null && !apiEvent.getBody().isEmpty()) {
+                    requestBody = objectMapper.readTree(apiEvent.getBody());
+                } else {
+                    requestBody = objectMapper.convertValue(apiEvent, JsonNode.class);
+                }
+            } else {
+                // Invoked directly (e.g., from Step Functions) - event is already the payload
+                requestBody = objectMapper.convertValue(event, JsonNode.class);
+            }
+            
+            System.out.println("Request body: " + requestBody.toString());
+            
             String jobName = requestBody.get("jobName").asText();
             String inputDataPath = requestBody.get("inputDataPath").asText();
             int kClusters = requestBody.has("kClusters") ? requestBody.get("kClusters").asInt() : 3;
@@ -84,7 +102,12 @@ public class SageMakerProcessorHandler implements RequestHandler<APIGatewayProxy
             responseBody.put("hyperparameters", result.hyperparameters);
             responseBody.put("lambda_function", "forestshield-sagemaker-processor-java");
             
-            return createResponse(200, responseBody);
+            if (isApiGateway) {
+                return createResponse(200, responseBody);
+            } else {
+                // For Step Functions, return the response body directly
+                return responseBody;
+            }
             
         } catch (Exception e) {
             System.err.println("Error starting SageMaker job: " + e.getMessage());
@@ -94,16 +117,51 @@ public class SageMakerProcessorHandler implements RequestHandler<APIGatewayProxy
             errorBody.put("success", false);
             errorBody.put("error", e.getMessage());
             
-            return createResponse(500, errorBody);
+            if (event instanceof APIGatewayProxyRequestEvent) {
+                return createResponse(500, errorBody);
+            } else {
+                // For Step Functions, return the error body directly
+                return errorBody;
+            }
         }
     }
     
     private TrainingJobResult startKMeansTrainingJob(String jobName, String inputDataPath, int kClusters, String imageId) throws Exception {
         String timestamp = String.valueOf(Instant.now().getEpochSecond());
-        String fullJobName = String.format("%s-%s", jobName, timestamp);
+        
+        // Sanitize job name to comply with SageMaker requirements: [a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}
+        String sanitizedJobName = jobName.replaceAll("[^a-zA-Z0-9-]", "-").replaceAll("-+", "-");
+        if (sanitizedJobName.startsWith("-")) {
+            sanitizedJobName = sanitizedJobName.substring(1);
+        }
+        if (sanitizedJobName.endsWith("-")) {
+            sanitizedJobName = sanitizedJobName.substring(0, sanitizedJobName.length() - 1);
+        }
+        
+        String fullJobName = String.format("%s-%s", sanitizedJobName, timestamp);
+        
+        // Ensure job name doesn't exceed 63 characters
+        if (fullJobName.length() > 63) {
+            fullJobName = fullJobName.substring(0, 63);
+            if (fullJobName.endsWith("-")) {
+                fullJobName = fullJobName.substring(0, 62);
+            }
+        }
+        
+        System.out.println("Original job name: " + jobName);
+        System.out.println("Sanitized job name: " + fullJobName);
+        
+        // Check if SageMaker role ARN is configured
+        if (SAGEMAKER_ROLE_ARN == null || SAGEMAKER_ROLE_ARN.isEmpty()) {
+            throw new RuntimeException("SAGEMAKER_ROLE environment variable is not set. Please configure the SageMaker execution role.");
+        }
+        
+        System.out.println("Using SageMaker role: " + SAGEMAKER_ROLE_ARN);
+        System.out.println("Output bucket: " + DATA_BUCKET);
         
         // Training image for K-means (Amazon's built-in algorithm)
-        String trainingImage = "382416733822.dkr.ecr.us-east-1.amazonaws.com/kmeans:1";
+        // Use the correct region - us-west-2
+        String trainingImage = "174872318107.dkr.ecr.us-west-2.amazonaws.com/kmeans:1";
         
         // Input data configuration
         Channel inputChannel = Channel.builder()
@@ -121,7 +179,7 @@ public class SageMakerProcessorHandler implements RequestHandler<APIGatewayProxy
             .build();
         
         // Output data configuration
-        String outputPath = String.format("s3://%s/sagemaker-output/kmeans/%s/", S3_OUTPUT_BUCKET, fullJobName);
+        String outputPath = String.format("s3://%s/sagemaker-output/kmeans/%s/", DATA_BUCKET, fullJobName);
         OutputDataConfig outputDataConfig = OutputDataConfig.builder()
             .s3OutputPath(outputPath)
             .build();

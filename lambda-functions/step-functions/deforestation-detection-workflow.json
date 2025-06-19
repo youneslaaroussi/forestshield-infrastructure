@@ -4,11 +4,11 @@
   "States": {
     "SearchSentinelImages": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:forestshield-search-images-java",
+      "Resource": "arn:aws:lambda:us-west-2:381492060635:function:forestshield-search-images",
       "Comment": "Search for Sentinel-2 satellite images in target region",
       "Parameters": {
         "latitude.$": "$.latitude",
-        "longitude.$": "$.longitude", 
+        "longitude.$": "$.longitude",
         "startDate.$": "$.startDate",
         "endDate.$": "$.endDate",
         "cloudCover.$": "$.cloudCover"
@@ -57,13 +57,13 @@
         "States": {
           "CalculateNDVI": {
             "Type": "Task",
-            "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:forestshield-ndvi-calculator-java",
+            "Resource": "arn:aws:lambda:us-west-2:381492060635:function:forestshield-vegetation-analyzer",
             "Comment": "Calculate NDVI from Red and NIR bands",
             "Parameters": {
               "imageId.$": "$.id",
               "redBandUrl.$": "$.assets.B04",
               "nirBandUrl.$": "$.assets.B08",
-              "outputBucket": "${S3_OUTPUT_BUCKET}"
+              "outputBucket": "forestshield-processed-data-381492060635"
             },
             "Retry": [
               {
@@ -101,7 +101,7 @@
           
           "StartSageMakerClustering": {
             "Type": "Task",
-            "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:forestshield-sagemaker-processor-java",
+            "Resource": "arn:aws:lambda:us-west-2:381492060635:function:forestshield-sagemaker-processor",
             "Comment": "Start SageMaker K-means clustering for deforestation detection",
             "Parameters": {
               "jobName.$": "$.imageId",
@@ -214,7 +214,7 @@
       "Resource": "arn:aws:states:::sns:publish",
       "Comment": "Send deforestation alerts via SNS",
       "Parameters": {
-        "TopicArn": "${SNS_TOPIC_ARN}",
+        "TopicArn": "${SnsTopicArn}",
         "Subject": "ForestShield Alert: Deforestation Detected",
         "Message.$": "$.summary"
       },

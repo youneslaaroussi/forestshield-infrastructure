@@ -1,7 +1,9 @@
-import { Controller, Get, Post, Body, Param, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Logger, Inject } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBody } from '@nestjs/swagger';
 import { SentinelService } from './sentinel.service';
 import { SearchParams } from './services/sentinel-data.service';
+import { DashboardService } from './services/dashboard.service';
+import { AlertLevel } from './dto/dashboard.dto';
 
 @ApiTags('analysis')
 @Controller('sentinel')
@@ -10,6 +12,7 @@ export class SentinelController {
 
   constructor(
     private readonly sentinelService: SentinelService,
+    private readonly dashboardService: DashboardService,
   ) {}
 
   @Get('health')
@@ -224,6 +227,49 @@ export class SentinelController {
 
     const analysis = await this.sentinelService.analyzeRegionForDeforestation(searchParams);
     
+    // Create or update a region in the dashboard for this analysis
+    const regionName = `Analysis ${body.latitude}, ${body.longitude}`;
+    let region;
+    
+    try {
+      // Try to find existing region with same coordinates
+      const existingRegions = await this.dashboardService.getAllRegions();
+      region = existingRegions.find(r => 
+        Math.abs(r.latitude - body.latitude) < 0.01 && 
+        Math.abs(r.longitude - body.longitude) < 0.01
+      );
+      
+      if (!region) {
+        // Create new region if none found
+        region = await this.dashboardService.createRegion({
+          name: regionName,
+          latitude: body.latitude,
+          longitude: body.longitude,
+          description: `Auto-created from analysis ${new Date().toISOString()}`,
+          radiusKm: 10,
+          cloudCoverThreshold: body.cloudCover || 20,
+        });
+      }
+      // Actually update the region with the latest analysis results
+      region = await this.dashboardService.updateRegion(region.id, {
+        lastDeforestationPercentage: analysis.analysisResults.deforestationPercentage,
+        lastAnalysis: new Date().toISOString(),
+      });
+      this.logger.log(`Updated region ${region.id} with ${analysis.analysisResults.deforestationPercentage}% deforestation`);
+    } catch (error) {
+      this.logger.warn(`Could not save region to dashboard: ${error.message}`);
+    }
+
+    // Create alert if deforestation is significant
+    if (analysis.analysisResults.deforestationPercentage > 3 && region) {
+      try {
+        await this.dashboardService.createAlert(region, analysis.analysisResults.deforestationPercentage);
+        this.logger.log(`Created alert for ${analysis.analysisResults.deforestationPercentage}% deforestation in region ${region.name}`);
+      } catch (error) {
+        this.logger.warn(`Could not create alert: ${error.message}`);
+      }
+    }
+    
     return {
       success: true,
       region: {
@@ -231,6 +277,7 @@ export class SentinelController {
         timeRange: `${body.startDate} to ${body.endDate}`,
       },
       ...analysis,
+      dashboardUpdated: !!region,
     };
   }
 

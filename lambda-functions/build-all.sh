@@ -5,24 +5,6 @@
 
 set -e
 
-# Cleanup function to remove build artifacts
-cleanup_build_artifacts() {
-    echo -e "${YELLOW}🧹 Cleaning up build artifacts...${NC}"
-    
-    # Remove target directories from Java projects
-    find . -name "target" -type d -exec rm -rf {} + 2>/dev/null || true
-    
-    # Remove Python build artifacts
-    rm -f vegetation-analyzer/vegetation-analyzer-deployment.zip 2>/dev/null || true
-    rm -f vegetation-analyzer/output.json 2>/dev/null || true
-    rm -f vegetation-analyzer/test-event.json 2>/dev/null || true
-    
-    echo -e "${GREEN}✅ Build artifacts cleaned up${NC}"
-}
-
-# Set trap to cleanup on exit (both success and failure)
-trap cleanup_build_artifacts EXIT
-
 echo "🚀 Building ForestShield Java Lambda Functions with SnapStart..."
 echo "=================================================================="
 

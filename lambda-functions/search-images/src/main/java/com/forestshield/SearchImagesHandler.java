@@ -22,7 +22,7 @@ import java.util.*;
  * Queries AWS Open Data STAC API for available images
  * Optimized with SnapStart for zero cold starts
  */
-public class SearchImagesHandler implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent>, Resource {
+public class SearchImagesHandler implements RequestHandler<Object, Object>, Resource {
     
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final HttpClient httpClient = HttpClient.newHttpClient();
@@ -52,17 +52,56 @@ public class SearchImagesHandler implements RequestHandler<APIGatewayProxyReques
     }
     
     @Override
-    public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent event, Context context) {
+    public Object handleRequest(Object event, Context context) {
         try {
             System.out.println("Processing Sentinel-2 image search request");
+            System.out.println("Input event type: " + event.getClass().getSimpleName());
             
-            // Parse request parameters
-            JsonNode requestBody = objectMapper.readTree(event.getBody());
+            JsonNode requestBody;
+            boolean isApiGateway = false;
+            
+            if (event instanceof APIGatewayProxyRequestEvent) {
+                // Invoked via API Gateway
+                APIGatewayProxyRequestEvent apiEvent = (APIGatewayProxyRequestEvent) event;
+                isApiGateway = true;
+                if (apiEvent.getBody() != null && !apiEvent.getBody().isEmpty()) {
+                    requestBody = objectMapper.readTree(apiEvent.getBody());
+                } else {
+                    requestBody = objectMapper.convertValue(apiEvent, JsonNode.class);
+                }
+            } else {
+                // Invoked directly (e.g., from Step Functions) - event is already the payload
+                requestBody = objectMapper.convertValue(event, JsonNode.class);
+            }
+
+            System.out.println("Request body: " + requestBody.toString());
+
+            // Extract from searchParams if nested
+            if (requestBody.has("searchParams")) {
+                requestBody = requestBody.get("searchParams");
+                System.out.println("Using nested searchParams: " + requestBody.toString());
+            }
+
+            // Add null checks for all required parameters
+            if (!requestBody.has("latitude") || requestBody.get("latitude") == null) {
+                throw new IllegalArgumentException("Missing required parameter: latitude");
+            }
+            if (!requestBody.has("longitude") || requestBody.get("longitude") == null) {
+                throw new IllegalArgumentException("Missing required parameter: longitude");
+            }
+            if (!requestBody.has("startDate") || requestBody.get("startDate") == null) {
+                throw new IllegalArgumentException("Missing required parameter: startDate");
+            }
+            if (!requestBody.has("endDate") || requestBody.get("endDate") == null) {
+                throw new IllegalArgumentException("Missing required parameter: endDate");
+            }
+
             double latitude = requestBody.get("latitude").asDouble();
             double longitude = requestBody.get("longitude").asDouble();
             String startDate = requestBody.get("startDate").asText();
             String endDate = requestBody.get("endDate").asText();
-            double cloudCover = requestBody.has("cloudCover") ? requestBody.get("cloudCover").asDouble() : 20.0;
+            double cloudCover = requestBody.has("cloudCover") && requestBody.get("cloudCover") != null 
+                ? requestBody.get("cloudCover").asDouble() : 20.0;
             
             System.out.println(String.format("Searching images for coordinates: %.2f, %.2f", latitude, longitude));
             System.out.println(String.format("Date range: %s to %s", startDate, endDate));
@@ -85,7 +124,12 @@ public class SearchImagesHandler implements RequestHandler<APIGatewayProxyReques
             ));
             responseBody.put("lambda_function", "forestshield-search-images-java");
             
-            return createResponse(200, responseBody);
+            if (isApiGateway) {
+                return createResponse(200, responseBody);
+            } else {
+                // For Step Functions, return the response body directly
+                return responseBody;
+            }
             
         } catch (Exception e) {
             System.err.println("Error searching images: " + e.getMessage());
@@ -95,7 +139,12 @@ public class SearchImagesHandler implements RequestHandler<APIGatewayProxyReques
             errorBody.put("success", false);
             errorBody.put("error", e.getMessage());
             
-            return createResponse(500, errorBody);
+            if (event instanceof APIGatewayProxyRequestEvent) {
+                return createResponse(500, errorBody);
+            } else {
+                // For Step Functions, return the error body directly
+                return errorBody;
+            }
         }
     }
     
@@ -119,9 +168,10 @@ public class SearchImagesHandler implements RequestHandler<APIGatewayProxyReques
         query.put("eo:cloud_cover", Map.of("lte", cloudCover));
         searchPayload.put("query", query);
         
+        // Request specific fields including the spectral bands we need
         Map<String, Object> fields = new HashMap<>();
         fields.put("include", List.of(
-            "id", "datetime", "geometry", "properties", 
+            "id", "datetime", "geometry", "properties", "bbox",
             "assets.B04", "assets.B08", "assets.B02", "assets.B03", "assets.visual"
         ));
         fields.put("exclude", List.of("links"));
@@ -150,11 +200,17 @@ public class SearchImagesHandler implements RequestHandler<APIGatewayProxyReques
         
         if (features != null && features.isArray()) {
             for (JsonNode feature : features) {
+                JsonNode properties = feature.get("properties");
+                if (properties == null) {
+                    System.err.println("Feature " + feature.get("id") + " is missing 'properties' field. Skipping.");
+                    continue; // Skip this feature
+                }
+
                 SentinelImage image = new SentinelImage();
                 image.id = feature.get("id").asText();
-                image.date = feature.get("properties").get("datetime").asText();
-                image.cloudCover = feature.get("properties").has("eo:cloud_cover") 
-                    ? feature.get("properties").get("eo:cloud_cover").asDouble() 
+                image.date = properties.get("datetime").asText();
+                image.cloudCover = properties.has("eo:cloud_cover")
+                    ? properties.get("eo:cloud_cover").asDouble()
                     : 0.0;
                 image.geometry = objectMapper.convertValue(feature.get("geometry"), Map.class);
                 
@@ -166,11 +222,45 @@ public class SearchImagesHandler implements RequestHandler<APIGatewayProxyReques
                 JsonNode assets = feature.get("assets");
                 if (assets != null) {
                     image.assets = new HashMap<>();
-                    if (assets.has("B04")) image.assets.put("B04", assets.get("B04").get("href").asText());
-                    if (assets.has("B08")) image.assets.put("B08", assets.get("B08").get("href").asText());
+                    
+                    // Debug: log available assets
+                    System.out.println("Available assets for image " + image.id + ":");
+                    assets.fieldNames().forEachRemaining(fieldName -> {
+                        System.out.println("  - " + fieldName);
+                    });
+                    
+                    // Extract all relevant assets
+                    if (assets.has("B04")) {
+                        String b04Url = assets.get("B04").get("href").asText();
+                        image.assets.put("B04", b04Url);
+                        System.out.println("B04 URL: " + b04Url);
+                    }
+                    if (assets.has("B08")) {
+                        String b08Url = assets.get("B08").get("href").asText();
+                        image.assets.put("B08", b08Url);
+                        System.out.println("B08 URL: " + b08Url);
+                    }
                     if (assets.has("B02")) image.assets.put("B02", assets.get("B02").get("href").asText());
                     if (assets.has("B03")) image.assets.put("B03", assets.get("B03").get("href").asText());
-                    if (assets.has("visual")) image.assets.put("visual", assets.get("visual").get("href").asText());
+                    if (assets.has("visual")) {
+                        String visualUrl = assets.get("visual").get("href").asText();
+                        image.assets.put("visual", visualUrl);
+                        
+                        // Fallback: construct B04 and B08 URLs from visual URL if not available
+                        if (!assets.has("B04") && visualUrl.contains("TCI.tif")) {
+                            String b04Url = visualUrl.replace("TCI.tif", "B04.tif");
+                            image.assets.put("B04", b04Url);
+                            System.out.println("Constructed B04 URL: " + b04Url);
+                        }
+                        if (!assets.has("B08") && visualUrl.contains("TCI.tif")) {
+                            String b08Url = visualUrl.replace("TCI.tif", "B08.tif");
+                            image.assets.put("B08", b08Url);
+                            System.out.println("Constructed B08 URL: " + b08Url);
+                        }
+                    }
+                    
+                    // Debug: log final assets
+                    System.out.println("Final assets for image " + image.id + ": " + image.assets);
                 }
                 
                 images.add(image);
