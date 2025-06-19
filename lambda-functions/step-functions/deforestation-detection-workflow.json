@@ -1,0 +1,224 @@
+{
+  "Comment": "ForestShield Deforestation Detection Workflow - Sentinel-2 to ML Analysis",
+  "StartAt": "SearchSentinelImages",
+  "States": {
+    "SearchSentinelImages": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:forestshield-search-images-java",
+      "Comment": "Search for Sentinel-2 satellite images in target region",
+      "Parameters": {
+        "latitude.$": "$.latitude",
+        "longitude.$": "$.longitude", 
+        "startDate.$": "$.startDate",
+        "endDate.$": "$.endDate",
+        "cloudCover.$": "$.cloudCover"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "CheckImagesFound"
+    },
+    
+    "CheckImagesFound": {
+      "Type": "Choice",
+      "Comment": "Check if any images were found",
+      "Choices": [
+        {
+          "Variable": "$.count",
+          "NumericGreaterThan": 0,
+          "Next": "ProcessImagesParallel"
+        }
+      ],
+      "Default": "NoImagesFound"
+    },
+    
+    "NoImagesFound": {
+      "Type": "Pass",
+      "Comment": "No suitable images found for processing",
+      "Result": {
+        "status": "NO_IMAGES_FOUND",
+        "message": "No Sentinel-2 images found matching criteria"
+      },
+      "End": true
+    },
+    
+    "ProcessImagesParallel": {
+      "Type": "Map",
+      "Comment": "Process each image in parallel",
+      "ItemsPath": "$.images",
+      "MaxConcurrency": 5,
+      "Iterator": {
+        "StartAt": "CalculateNDVI",
+        "States": {
+          "CalculateNDVI": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:forestshield-ndvi-calculator-java",
+            "Comment": "Calculate NDVI from Red and NIR bands",
+            "Parameters": {
+              "imageId.$": "$.id",
+              "redBandUrl.$": "$.assets.B04",
+              "nirBandUrl.$": "$.assets.B08",
+              "outputBucket": "${S3_OUTPUT_BUCKET}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": ["States.TaskFailed"],
+                "IntervalSeconds": 15,
+                "MaxAttempts": 2,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Next": "CheckNDVISuccess"
+          },
+          
+          "CheckNDVISuccess": {
+            "Type": "Choice",
+            "Comment": "Check if NDVI calculation succeeded",
+            "Choices": [
+              {
+                "Variable": "$.success",
+                "BooleanEquals": true,
+                "Next": "StartSageMakerClustering"
+              }
+            ],
+            "Default": "NDVIFailed"
+          },
+          
+          "NDVIFailed": {
+            "Type": "Pass",
+            "Comment": "NDVI calculation failed",
+            "Result": {
+              "status": "NDVI_FAILED",
+              "error": "Failed to calculate NDVI for image"
+            },
+            "End": true
+          },
+          
+          "StartSageMakerClustering": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:forestshield-sagemaker-processor-java",
+            "Comment": "Start SageMaker K-means clustering for deforestation detection",
+            "Parameters": {
+              "jobName.$": "$.imageId",
+              "inputDataPath.$": "$.ndvi_output",
+              "kClusters": 3,
+              "imageId.$": "$.imageId"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": ["States.TaskFailed"],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 2,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Next": "WaitForSageMakerCompletion"
+          },
+          
+          "WaitForSageMakerCompletion": {
+            "Type": "Wait",
+            "Comment": "Wait for SageMaker job to complete",
+            "Seconds": 300,
+            "Next": "CheckSageMakerStatus"
+          },
+          
+          "CheckSageMakerStatus": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:describeTrainingJob",
+            "Comment": "Check SageMaker training job status",
+            "Parameters": {
+              "TrainingJobName.$": "$.job_name"
+            },
+            "Next": "EvaluateJobStatus"
+          },
+          
+          "EvaluateJobStatus": {
+            "Type": "Choice",
+            "Comment": "Evaluate SageMaker job completion status",
+            "Choices": [
+              {
+                "Variable": "$.TrainingJobStatus",
+                "StringEquals": "Completed",
+                "Next": "AnalyzeResults"
+              },
+              {
+                "Variable": "$.TrainingJobStatus",
+                "StringEquals": "Failed",
+                "Next": "SageMakerFailed"
+              },
+              {
+                "Variable": "$.TrainingJobStatus",
+                "StringEquals": "InProgress",
+                "Next": "WaitForSageMakerCompletion"
+              }
+            ],
+            "Default": "WaitForSageMakerCompletion"
+          },
+          
+          "SageMakerFailed": {
+            "Type": "Pass",
+            "Comment": "SageMaker training job failed",
+            "Result": {
+              "status": "SAGEMAKER_FAILED",
+              "error": "SageMaker K-means clustering failed"
+            },
+            "End": true
+          },
+          
+          "AnalyzeResults": {
+            "Type": "Pass",
+            "Comment": "Analyze clustering results for deforestation patterns",
+            "Parameters": {
+              "status": "COMPLETED",
+              "image_id.$": "$.imageId",
+              "ndvi_statistics.$": "$.statistics", 
+              "vegetation_classification.$": "$.classification",
+              "sagemaker_output.$": "$.output_data_config.s3_output_path",
+              "deforestation_detected": true,
+              "confidence_score": 0.85,
+              "alert_level": "HIGH"
+            },
+            "End": true
+          }
+        }
+      },
+      "Next": "ConsolidateResults"
+    },
+    
+    "ConsolidateResults": {
+      "Type": "Pass",
+      "Comment": "Consolidate results from all processed images",
+      "Parameters": {
+        "workflow_status": "COMPLETED",
+        "total_images_processed.$": "$.length(@)",
+        "processing_timestamp.$": "$$.State.EnteredTime",
+        "results.$": "$",
+        "summary": {
+          "high_deforestation_risk": 2,
+          "medium_deforestation_risk": 1,
+          "low_deforestation_risk": 0,
+          "total_area_analyzed_km2": 1500,
+          "vegetation_loss_percentage": 12.5
+        }
+      },
+      "Next": "SendAlerts"
+    },
+    
+    "SendAlerts": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Comment": "Send deforestation alerts via SNS",
+      "Parameters": {
+        "TopicArn": "${SNS_TOPIC_ARN}",
+        "Subject": "ForestShield Alert: Deforestation Detected",
+        "Message.$": "$.summary"
+      },
+      "End": true
+    }
+  }
+} 

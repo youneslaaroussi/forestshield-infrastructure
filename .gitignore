@@ -1,0 +1,99 @@
+# compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+.env.production
+.env.development
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# AWS
+.aws
+aws
+
+# Java/Maven build artifacts
+**/target/
+*.jar
+*.war
+*.ear
+*.class
+
+# Python build artifacts
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Lambda deployment packages
+lambda-functions/**/*.zip
+lambda-functions/**/vegetation-analyzer-deployment.zip
+lambda-functions/**/output.json
+lambda-functions/**/test-event.json
+lambda-functions/**/requirements.txt
+lambda-functions/**/Dockerfile
+
+# Backup files
+*.bak
+*.backup
+*.swp
+*.tmp
+
+# Build and deployment temp files
+lambda-trust-policy.json
+sagemaker-trust-policy.json
+stepfunctions-trust-policy.json

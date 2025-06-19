@@ -1,0 +1,6 @@
+# The GDAL layer should provide all GDAL functionality
+# This file is mostly empty since we're relying on the lambgeo layer
+# If you need additional packages, add them here 
+
+# GDAL Python bindings - must match the layer's GDAL version (3.8.3)
+GDAL==3.8.3 

@@ -1,0 +1,1 @@
+{"statusCode": 500, "body": "{\"error\": \"GDAL import failed\", \"message\": \"No module named 'osgeo'\", \"test_status\": \"FAILED - Layer not working\"}"}
