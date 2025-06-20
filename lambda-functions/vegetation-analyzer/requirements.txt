@@ -1,0 +1,5 @@
+# GDAL Python bindings - must match the lambgeo layer's GDAL version (3.8.3)
+GDAL==3.8.3
+rasterio
+numpy<2.0
+mxnet 

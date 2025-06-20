@@ -84,8 +84,6 @@ lambda-functions/**/*.zip
 lambda-functions/**/vegetation-analyzer-deployment.zip
 lambda-functions/**/output.json
 lambda-functions/**/test-event.json
-lambda-functions/**/requirements.txt
-lambda-functions/**/Dockerfile
 
 # Backup files
 *.bak
