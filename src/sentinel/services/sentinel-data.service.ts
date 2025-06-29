@@ -54,68 +54,75 @@ export class SentinelDataService {
   ) {}
 
   async searchImages(params: SearchParams): Promise<SentinelImage[]> {
-    this.logger.log(`Searching Sentinel-2 images for coordinates: ${params.latitude}, ${params.longitude}`);
+    this.logger.log(`Searching Sentinel-2 images via Lambda for coordinates: ${params.latitude}, ${params.longitude}`);
     
-    // Create bounding box around the point (±0.1 degrees = ~11km)
-    const bbox = [
-      params.longitude - 0.1,
-      params.latitude - 0.1,
-      params.longitude + 0.1,
-      params.latitude + 0.1,
-    ];
+    // Re-add date validation before invoking the Lambda
+    let { startDate: originalStartDate, endDate: originalEndDate, ...rest } = params;
+    let endDate = new Date(originalEndDate);
+    const now = new Date();
 
-    const searchPayload = {
-      limit: 50,
-      datetime: `${params.startDate}T00:00:00Z/${params.endDate}T23:59:59Z`,
-      bbox,
-      collections: ['sentinel-2-l2a'],
-      query: {
-        'eo:cloud_cover': {
-          lte: params.cloudCover,
-        },
-      },
-      fields: {
-        include: ['id', 'datetime', 'geometry', 'properties', 'assets.red', 'assets.nir', 'assets.blue', 'assets.green', 'assets.visual'],
-        exclude: ['links'],
-      },
+    if (endDate > now) {
+      this.logger.warn(`End date ${originalEndDate} is in the future. Adjusting to today.`);
+      endDate = now;
+    }
+
+    let startDate = new Date(originalStartDate);
+    if (startDate > endDate) {
+      this.logger.warn(`Start date ${originalStartDate} is after end date ${endDate.toISOString().split('T')[0]}. Adjusting start date to 30 days prior.`);
+      startDate = new Date(endDate);
+      startDate.setDate(endDate.getDate() - 30);
+    }
+    
+    const finalParams = {
+      ...rest,
+      startDate: startDate.toISOString().split('T')[0],
+      endDate: endDate.toISOString().split('T')[0],
     };
 
-    this.logger.debug('STAC search payload:', JSON.stringify(searchPayload, null, 2));
-
-    const response = await firstValueFrom(
-      this.httpService.post(`${this.stacEndpoint}/search`, searchPayload)
-    );
-
-    const features = response.data.features || [];
-    this.logger.log(`Found ${features.length} Sentinel-2 images`);
-
-    if (features.length === 0) {
-      throw new Error(`No Sentinel-2 images found for the specified criteria`);
+    const functionName = this.configService.get<string>('SEARCH_IMAGES_FUNCTION_ARN');
+    if (!functionName) {
+      this.logger.error('SEARCH_IMAGES_FUNCTION_ARN is not set in environment variables.');
+      throw new Error('Search image function is not configured.');
     }
 
-    // DEBUG: Log first few images to understand data structure
-    if (features.length > 0) {
-      this.logger.debug('Sample image data:');
-      this.logger.debug('Image ID:', features[0].id);
-      this.logger.debug('Available assets:', Object.keys(features[0].assets || {}));
-      this.logger.debug('Red asset:', JSON.stringify(features[0].assets?.red, null, 2));
-      this.logger.debug('NIR asset:', JSON.stringify(features[0].assets?.nir, null, 2));
-    }
+    try {
+      // aws.service.invokeLambda returns the parsed body directly
+      const results = await this.awsService.invokeLambda(functionName, finalParams);
+      
+      this.logger.debug(`Lambda response: ${JSON.stringify(results)}`);
 
-    return features.map((feature: any) => ({
-      id: feature.id,
-      date: feature.properties.datetime,
-      cloudCover: feature.properties['eo:cloud_cover'] || 0,
-      geometry: feature.geometry,
-      bbox: feature.bbox,
-      assets: {
-        red: feature.assets?.red?.href || '',
-        nir: feature.assets?.nir?.href || '',
-        blue: feature.assets?.blue?.href || '',
-        green: feature.assets?.green?.href || '',
-        visual: feature.assets?.visual?.href || '',
-      },
-    }));
+      if (!results || typeof results.success === 'undefined') {
+         throw new Error('Invalid response from Search Lambda');
+      }
+
+      if (results.success === false) {
+        this.logger.warn(`Search Lambda reported failure: ${JSON.stringify(results)}`);
+        return []; // Return empty on reported failure
+      }
+
+      this.logger.log(`Found ${results.count || 0} Sentinel-2 images via Lambda.`);
+
+      // The Java lambda returns raw STAC features. We need to map them to our SentinelImage interface.
+      const features = results.images || [];
+      return features.map((feature: any) => ({
+        id: feature.id,
+        date: feature.date,
+        cloudCover: feature.cloudCover || 0,
+        geometry: feature.geometry,
+        bbox: feature.bbox,
+        assets: {
+          red: feature.assets?.B04 || '',
+          nir: feature.assets?.B08 || '',
+          blue: feature.assets?.B02 || '',
+          green: feature.assets?.B03 || '',
+          visual: feature.assets?.visual || '',
+        },
+      }));
+
+    } catch (error) {
+      this.logger.error(`Failed to invoke search-images lambda: ${error.message}`, error.stack);
+      return [];
+    }
   }
 
   async calculateNDVIWithLambda(image: SentinelImage, region?: {latitude: number, longitude: number}): Promise<NDVIResult> {

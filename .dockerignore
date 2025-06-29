@@ -1,0 +1,68 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+coverage/
+*.tsbuildinfo
+
+# Development files
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Testing
+test/
+*.spec.ts
+*.test.ts
+
+# Documentation
+*.md
+docs/
+
+# Lambda functions (not needed in API container)
+lambda-functions/
+lambda-gdal-test/
+
+# Deployment files
+cloudformation.yaml
+deploy*.sh
+rollback.sh
+*.json
+!package*.json
+!tsconfig*.json
+
+# Downloads and temp files
+downloads/
+*.log
+*.tmp
+
+# AWS deployment
+aws-deployment-guide.md
+cloudformation-deployment-guide.md 

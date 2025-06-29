@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, GetObjectCommandInput } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SageMakerClient, CreateProcessingJobCommand, DescribeProcessingJobCommand } from '@aws-sdk/client-sagemaker';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
@@ -55,6 +56,20 @@ export class AWSService {
     }
     
     return Buffer.concat(chunks);
+  }
+
+  async generateS3SignedUrl(bucketName: string, key: string, expiresIn: number = 3600): Promise<string> {
+    this.logger.log(`Generating signed URL for S3: ${bucketName}/${key}`);
+    
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+    });
+
+    const signedUrl = await getSignedUrl(this.s3Client as any, command, { expiresIn });
+    this.logger.log(`Generated signed URL expires in ${expiresIn} seconds`);
+    
+    return signedUrl;
   }
 
   async startSageMakerProcessingJob(jobName: string, inputDataConfig: any, outputDataConfig: any, processingResources: any): Promise<string> {

@@ -1,0 +1,7 @@
+# Use numpy 1.24.x which is known to work well in Lambda (same as vegetation-analyzer)
+numpy==1.24.3
+# matplotlib for plotting
+matplotlib==3.8.4
+seaborn==0.13.2
+pandas==2.2.2
+boto3==1.34.131 

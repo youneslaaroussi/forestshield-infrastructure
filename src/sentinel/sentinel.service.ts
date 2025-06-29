@@ -233,11 +233,6 @@ export class SentinelService {
       throw new Error('STEP_FUNCTIONS_STATE_MACHINE_ARN environment variable is required');
     }
 
-    const input = {
-      searchParams,
-      timestamp: new Date().toISOString(),
-    };
-
-    return this.awsService.startStepFunctionsExecution(stateMachineArn, input);
+    return this.awsService.startStepFunctionsExecution(stateMachineArn, searchParams);
   }
 } 

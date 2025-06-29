@@ -1,0 +1,6 @@
+# ForestShield Results Consolidator Requirements
+# Dependencies handled in Dockerfile for proper Lambda compilation
+
+reportlab==4.0.9
+boto3==1.34.34
+Pillow==10.1.0 

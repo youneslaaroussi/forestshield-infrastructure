@@ -333,3 +333,20 @@ POST /sentinel/analyze-region
 ## Useful commands
 
 View logs: aws logs tail /aws/lambda/forestshield-vegetation-analyzer
+
+# Disable termination protection on the failed stack
+aws cloudformation update-termination-protection --no-enable-termination-protection --stack-name forestshield-infratructure --region us-west-2
+
+# Delete the failed stack
+aws cloudformation delete-stack --stack-name forestshield-infratructure --region us-west-2
+
+# Wait for deletion to complete
+aws cloudformation wait stack-delete-complete --stack-name forestshield-infratructure --region us-west-2
+
+# update a single lambda
+cd lambda-functions/my-function
+bash build.sh
+aws lambda update-function-code --function-name forestshield-k-selector --zip-file fileb://lambda-functions/k-selector/k-selector-lambda.zip
+
+# or just run this
+deploy.sh lambdas results-consolidator -u

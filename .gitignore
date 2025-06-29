@@ -97,3 +97,7 @@ sagemaker-trust-policy.json
 stepfunctions-trust-policy.json
 sagemaker-processor-deployment.zip
 vegetation-analyzer-deployment.zip
+
+# Planning and documentation files
+ESG_RAG_SYSTEM_IMPLEMENTATION_PLAN.md
+KMEANS_IMPROVEMENT_PLAN.md

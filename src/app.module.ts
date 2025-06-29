@@ -4,6 +4,8 @@ import { HttpModule } from '@nestjs/axios';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { SentinelModule } from './sentinel/sentinel.module';
+import { HealthController } from './health.controller';
+import { RedisModule } from './redis/redis.module';
 
 @Module({
   imports: [
@@ -11,9 +13,10 @@ import { SentinelModule } from './sentinel/sentinel.module';
       isGlobal: true,
     }),
     HttpModule,
+    RedisModule,
     SentinelModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, HealthController],
   providers: [AppService],
 })
 export class AppModule {}

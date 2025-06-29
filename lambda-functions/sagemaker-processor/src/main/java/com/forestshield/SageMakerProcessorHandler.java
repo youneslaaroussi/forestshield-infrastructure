@@ -205,7 +205,7 @@ public class SageMakerProcessorHandler implements RequestHandler<Object, Object>
         // Hyperparameters for K-means
         Map<String, String> hyperparameters = new HashMap<>();
         hyperparameters.put("k", String.valueOf(kClusters));
-        hyperparameters.put("feature_dim", "1"); // NDVI is single dimension
+        hyperparameters.put("feature_dim", "5"); // 5D features: [NDVI, Red, NIR, Lat, Lng]
         hyperparameters.put("mini_batch_size", "1000");
         hyperparameters.put("epochs", "10");
         hyperparameters.put("init_method", "kmeans++");

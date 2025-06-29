@@ -72,7 +72,7 @@ export class CreateRegionDto {
 
 export class RegionDto extends CreateRegionDto {
   @ApiProperty({ example: 'region-123abc', description: 'Unique region identifier' })
-  id: string;
+  regionId: string;
 
   @ApiProperty({ enum: RegionStatus, example: RegionStatus.ACTIVE, description: 'Current monitoring status' })
   status: RegionStatus;

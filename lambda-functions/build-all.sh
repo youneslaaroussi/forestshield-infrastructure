@@ -67,13 +67,45 @@ ls -1 ./ | grep -v "step-functions\|build-all.sh\|deploy-all.sh" | while read la
 done
 echo ""
 
-# Build Python Lambda (vegetation-analyzer) using Docker + lambgeo layer
+# Build Python Lambdas
 echo -e "${BLUE}🐍 Building Python Lambda: vegetation-analyzer (with GDAL layer)${NC}"
 cd vegetation-analyzer
 chmod +x build.sh
 echo -e "${YELLOW}   🐳 Building with Docker + lambgeo layer...${NC}"
 ./build.sh
 echo -e "${GREEN}   ✅ Python Lambda packaged with GDAL bindings: vegetation-analyzer-deployment.zip${NC}"
+cd ..
+
+echo -e "${BLUE}🔄 Building Python Lambda: results-consolidator (lightweight)${NC}"
+cd results-consolidator
+chmod +x build.sh
+echo -e "${YELLOW}   📦 Building pure Python package...${NC}"
+./build.sh
+echo -e "${GREEN}   ✅ Python Lambda packaged: results-consolidator-deployment.zip${NC}"
+cd ..
+
+echo -e "${BLUE}🗄️ Building Python Lambda: model-manager (lightweight)${NC}"
+cd model-manager
+chmod +x build.sh
+echo -e "${YELLOW}   📦 Building pure Python package...${NC}"
+./build.sh
+echo -e "${GREEN}   ✅ Python Lambda packaged: model-manager-deployment.zip${NC}"
+cd ..
+
+echo -e "${BLUE}🎨 Building Python Lambda: visualization-generator (with matplotlib)${NC}"
+cd visualization-generator
+chmod +x build.sh
+echo -e "${YELLOW}   📊 Building with matplotlib + seaborn + pandas...${NC}"
+./build.sh
+echo -e "${GREEN}   ✅ Python Lambda packaged: visualization-generator-deployment.zip${NC}"
+cd ..
+
+echo -e "${BLUE}🎯 Building Python Lambda: k-selector (PHASE 2.2 - Dynamic K Selection)${NC}"
+cd k-selector
+chmod +x build.sh
+echo -e "${YELLOW}   🧮 Building with numpy for K-means optimization...${NC}"
+./build.sh
+echo -e "${GREEN}   ✅ Python Lambda packaged: k-selector-lambda.zip${NC}"
 cd ..
 
 # Build Java Lambdas
@@ -84,6 +116,10 @@ echo -e "${GREEN}🎉 All Lambda functions built successfully!${NC}"
 echo ""
 echo -e "${BLUE}📋 Summary:${NC}"
 echo "   • Vegetation Analyzer - Python 3.11 + lambgeo layer + GDAL 3.8.3 + rasterio"
+echo "   • Results Consolidator - Python 3.11 + pure Python (no dependencies)"
+echo "   • Model Manager - Python 3.11 + pure Python (boto3 for S3/DynamoDB)"
+echo "   • Visualization Generator - Python 3.11 + matplotlib + seaborn + pandas"
+echo "   • K-Selector (PHASE 2.2) - Python 3.11 + numpy (Dynamic K Selection)"
 echo "   • Search Images - Java 17 + SnapStart + HTTP Client"
 echo "   • SageMaker Processor - Java 17 + SnapStart + ML"
 echo ""

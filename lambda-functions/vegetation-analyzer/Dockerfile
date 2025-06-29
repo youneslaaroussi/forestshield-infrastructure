@@ -1,5 +1,5 @@
-# Use the lambgeo base image to build GDAL Python bindings
-FROM ghcr.io/lambgeo/lambda-gdal:3.8-python3.11
+# Use the lambgeo base image to build GDAL Python bindings - MATCH LAMBDA RUNTIME
+FROM ghcr.io/lambgeo/lambda-gdal:3.8-python3.9
 
 ENV PACKAGE_PREFIX=/var/task
 
@@ -12,9 +12,13 @@ COPY ndvi_processor.py ${PACKAGE_PREFIX}/ndvi_processor.py
 COPY s3_utils.py ${PACKAGE_PREFIX}/s3_utils.py
 COPY requirements.txt ${PACKAGE_PREFIX}/requirements.txt
 
-# Install Python dependencies from requirements.txt
-# --no-binary GDAL is CRITICAL to force GDAL to compile against the C libs in the layer
-RUN pip install --no-binary GDAL -r requirements.txt -t ${PACKAGE_PREFIX}/
+# Install Python dependencies - CRITICAL FIX FOR NUMPY IMPORT ERROR
+# Install GDAL with --no-binary to compile against C libs in the lambgeo layer
+RUN pip install GDAL==3.8.3 --no-binary GDAL -t ${PACKAGE_PREFIX}/
+
+# Install numpy, rasterio, and pyproj with specific versions as binary wheels ONLY
+# Force binary wheels to avoid GCC version conflicts
+RUN pip install numpy==1.24.3 rasterio==1.3.8 pyproj==3.6.1 --only-binary=all -t ${PACKAGE_PREFIX}/
 
 # Remove unnecessary files to keep package small
 RUN cd ${PACKAGE_PREFIX} && \

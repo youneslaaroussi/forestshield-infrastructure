@@ -85,29 +85,52 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             image_id=image_id
         )
         
-        # Upload results to S3
+        # Upload results to S3 for SageMaker processing
         logger.info("☁️ Uploading results to S3...")
-        s3_output_path = s3_handler.upload_ndvi_result(
+        ndvi_output_path, sagemaker_training_path = s3_handler.upload_ndvi_result(
             image_id=image_id,
-            statistics=ndvi_result['statistics']
+            statistics=ndvi_result['statistics'],
+            pixel_data=ndvi_result.get('pixel_data', [])  # PHASE 1: Pass real pixel data
         )
         
         # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
         
-        # Prepare response
-        response_data = {
-            'success': True,
-            'imageId': image_id,
-            'statistics': ndvi_result['statistics'],
-            'ndvi_output': s3_output_path,
-            'processing_time_ms': processing_time_ms,
-            'region': region
-        }
+        # Prepare response - different formats for API Gateway vs Step Functions
+        if is_api_gateway:
+            # API Gateway can handle larger responses
+            response_data = {
+                'success': True,
+                'imageId': image_id,
+                'statistics': ndvi_result['statistics'],
+                'pixel_data': ndvi_result.get('pixel_data', []),  # PHASE 1: Include real pixel data
+                'spatial_metadata': ndvi_result.get('spatial_metadata', {}),  # PHASE 1: Include spatial info
+                'ndvi_output': ndvi_output_path,
+                'sagemaker_training_data': sagemaker_training_path,
+                'processing_time_ms': processing_time_ms,
+                'region': region,
+                'phase': 'Phase 2: SageMaker-Only ML Processing'  # Track implementation phase
+            }
+        else:
+            # Step Functions has 256KB limit - exclude large pixel data array
+            pixel_count = len(ndvi_result.get('pixel_data', []))
+            response_data = {
+                'success': True,
+                'imageId': image_id,
+                'statistics': ndvi_result['statistics'],
+                'pixel_count': pixel_count,  # Just the count, not the full array
+                'spatial_metadata': ndvi_result.get('spatial_metadata', {}),  # Keep spatial info
+                'ndvi_output': ndvi_output_path,
+                'sagemaker_training_data': sagemaker_training_path,
+                'processing_time_ms': processing_time_ms,
+                'region': region,
+                'phase': 'Phase 2: SageMaker-Only ML Processing'  # Track implementation phase
+            }
         
         logger.info(f"✅ Vegetation analysis completed in {processing_time_ms}ms")
         logger.info(f"📊 NDVI Stats: mean={ndvi_result['statistics']['mean_ndvi']:.3f}, "
                    f"vegetation={ndvi_result['statistics']['vegetation_coverage']:.1f}%")
+        logger.info(f"🤖 SageMaker training data ready: {sagemaker_training_path}")
         
         if is_api_gateway:
             # API Gateway response format

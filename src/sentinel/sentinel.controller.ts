@@ -251,11 +251,11 @@ export class SentinelController {
         });
       }
       // Actually update the region with the latest analysis results
-      region = await this.dashboardService.updateRegion(region.id, {
+      region = await this.dashboardService.updateRegion(region.regionId, {
         lastDeforestationPercentage: analysis.analysisResults.deforestationPercentage,
         lastAnalysis: new Date().toISOString(),
       });
-      this.logger.log(`Updated region ${region.id} with ${analysis.analysisResults.deforestationPercentage}% deforestation`);
+      this.logger.log(`Updated region ${region.regionId} with ${analysis.analysisResults.deforestationPercentage}% deforestation`);
     } catch (error) {
       this.logger.warn(`Could not save region to dashboard: ${error.message}`);
     }

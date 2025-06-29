@@ -1,5 +1,8 @@
 # GDAL Python bindings - must match the lambgeo layer's GDAL version (3.8.3)
 GDAL==3.8.3
-rasterio
-numpy<2.0
-mxnet 
+# Use numpy 1.24.x which is known to work well in Lambda
+numpy==1.24.3
+# Rasterio for geospatial raster processing
+rasterio==1.3.8
+# Pyproj for coordinate transformations
+pyproj==3.6.1

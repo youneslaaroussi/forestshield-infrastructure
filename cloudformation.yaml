@@ -1,0 +1,1709 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ForestShield - Serverless deforestation detection infrastructure'
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: 'Email address for deforestation alerts (optional)'
+    Default: ''
+  
+  ForestShieldAPIBaseURL:
+    Type: String
+    Description: 'Base URL for ForestShield API'
+    Default: 'https://api.forestshieldapp.com'
+  
+  Environment:
+    Type: String
+    Description: 'Environment name (dev, staging, prod)'
+    Default: 'dev'
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+  ProcessedDataBucketName:
+    Type: String
+    Default: ""
+    Description: "Leave empty to create new bucket, or provide existing bucket name"
+
+  ModelsBucketName:
+    Type: String
+    Default: ""
+    Description: "Leave empty to create new bucket, or provide existing bucket name"
+
+  TempBucketName:
+    Type: String
+    Default: ""
+    Description: "Leave empty to create new bucket, or provide existing bucket name"
+
+  AthenaTableName:
+    Type: String
+    Default: "geospatial_data"
+    Description: "Name of the Glue/Athena table for geospatial data."
+  AthenaWorkgroup:
+    Type: String
+    Default: "primary"
+    Description: "Name of the Athena workgroup to use for queries."
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+  CreateProcessedDataBucket: !Equals [!Ref ProcessedDataBucketName, ""]
+  CreateModelsBucket: !Equals [!Ref ModelsBucketName, ""]
+  CreateTempBucket: !Equals [!Ref TempBucketName, ""]
+
+Resources:
+  # S3 Buckets
+  ProcessedDataBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateProcessedDataBucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'forestshield-processed-data-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  ModelsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateModelsBucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'forestshield-models-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  TempBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateTempBucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'forestshield-temp-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteTempFiles
+            Status: Enabled
+            ExpirationInDays: 7
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'forestshield-athena-results-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # IAM Roles
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'FSLambdaRole-${Environment}-${AWS::AccountId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: PassSageMakerRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt SageMakerExecutionRole.Arn
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'FSSageMakerRole-${Environment}-${AWS::AccountId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::forestshield-processed-data-${AWS::AccountId}/*'
+                  - !Sub 'arn:aws:s3:::forestshield-models-${AWS::AccountId}/*'
+                  - !Sub 'arn:aws:s3:::forestshield-temp-${AWS::AccountId}/*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::forestshield-processed-data-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::forestshield-models-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::forestshield-temp-${AWS::AccountId}'
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'FSStepFunctionsRole-${Environment}-${AWS::AccountId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+        - arn:aws:iam::aws:policy/CloudWatchEventsFullAccess
+      Policies:
+        - PolicyName: SNSPublishPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref AlertsTopic
+        - PolicyName: StepFunctionsAdditionalPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListTargetsByRule
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: "*"
+        - PolicyName: SageMakerExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreateTrainingJob
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:StopTrainingJob
+                  - sagemaker:AddTags
+                Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:training-job/*'
+        - PolicyName: PassSageMakerRoleForStepFunctions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt SageMakerExecutionRole.Arn
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # SNS Topic for Alerts
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: forestshield-deforestation-alerts
+      DisplayName: 'ForestShield Deforestation Alerts'
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  AlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      Protocol: email
+      TopicArn: !Ref AlertsTopic
+      Endpoint: !Ref AlertEmail
+
+  # Lambda Functions
+  VegetationAnalyzerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forestshield-vegetation-analyzer
+      Runtime: python3.9
+      Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Sub 'forestshield-lambda-deployments-${AWS::AccountId}'
+        S3Key: vegetation-analyzer-deployment.zip
+      Timeout: 300
+      MemorySize: 2048
+      Layers:
+        - arn:aws:lambda:us-west-2:524387336408:layer:gdal38:4
+      Environment:
+        Variables:
+          GDAL_DATA: /opt/share/gdal
+          PROJ_LIB: /opt/share/proj
+          PROCESSED_DATA_BUCKET: !If [CreateProcessedDataBucket, !Sub 'forestshield-processed-data-${AWS::AccountId}', !Ref ProcessedDataBucketName]
+          TEMP_BUCKET: !If [CreateTempBucket, !Sub 'forestshield-temp-${AWS::AccountId}', !Ref TempBucketName]
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  ResultsConsolidatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forestshield-results-consolidator
+      Runtime: python3.9
+      Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Sub 'forestshield-lambda-deployments-${AWS::AccountId}'
+        S3Key: results-consolidator-deployment.zip
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          FORESTSHIELD_API_BASE_URL: !Ref ForestShieldAPIBaseURL
+          PROCESSED_DATA_BUCKET: !If [CreateProcessedDataBucket, !Sub 'forestshield-processed-data-${AWS::AccountId}', !Ref ProcessedDataBucketName]
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  ModelManagerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forestshield-model-manager
+      Runtime: python3.9
+      Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Sub 'forestshield-lambda-deployments-${AWS::AccountId}'
+        S3Key: model-manager-deployment.zip
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          MODELS_BUCKET: !If [CreateModelsBucket, !Sub 'forestshield-models-${AWS::AccountId}', !Ref ModelsBucketName]
+          PROCESSED_DATA_BUCKET: !If [CreateProcessedDataBucket, !Sub 'forestshield-processed-data-${AWS::AccountId}', !Ref ProcessedDataBucketName]
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  VisualizationGeneratorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forestshield-visualization-generator
+      Runtime: python3.9
+      Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Sub 'forestshield-lambda-deployments-${AWS::AccountId}'
+        S3Key: visualization-generator-deployment.zip
+      Timeout: 300
+      MemorySize: 2048
+      Environment:
+        Variables:
+          PROCESSED_DATA_BUCKET: !If [CreateProcessedDataBucket, !Sub 'forestshield-processed-data-${AWS::AccountId}', !Ref ProcessedDataBucketName]
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  KSelectorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forestshield-k-selector
+      Runtime: python3.9
+      Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Sub 'forestshield-lambda-deployments-${AWS::AccountId}'
+        S3Key: k-selector-lambda.zip
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          SAGEMAKER_ROLE_ARN: !GetAtt SageMakerExecutionRole.Arn
+          PROCESSED_DATA_BUCKET: !If [CreateProcessedDataBucket, !Sub 'forestshield-processed-data-${AWS::AccountId}', !Ref ProcessedDataBucketName]
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  SearchImagesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forestshield-search-images
+      Runtime: java17
+      Handler: com.forestshield.SearchImagesHandler::handleRequest
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Sub 'forestshield-lambda-deployments-${AWS::AccountId}'
+        S3Key: search-images-1.0.0.jar
+      Timeout: 60
+      MemorySize: 512
+      SnapStart:
+        ApplyOn: PublishedVersions
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  SageMakerProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forestshield-sagemaker-processor
+      Runtime: java17
+      Handler: com.forestshield.SageMakerProcessorHandler::handleRequest
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Sub 'forestshield-lambda-deployments-${AWS::AccountId}'
+        S3Key: sagemaker-processor-1.0.0.jar
+      Timeout: 300
+      MemorySize: 1024
+      SnapStart:
+        ApplyOn: PublishedVersions
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Step Functions State Machine
+  DeforestationDetectionWorkflow:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: forestshield-pipeline
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "ForestShield Deforestation Detection Workflow - Sentinel-2 to ML Analysis",
+          "StartAt": "SearchSentinelImages",
+          "States": {
+            "SearchSentinelImages": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Comment": "Search for Sentinel-2 satellite images in target region",
+              "Parameters": {
+                "FunctionName": "${SearchImagesFunction.Arn}",
+                "Payload": {
+                "latitude.$": "$.latitude",
+                "longitude.$": "$.longitude",
+                "startDate.$": "$.startDate",
+                "endDate.$": "$.endDate",
+                "cloudCover.$": "$.cloudCover",
+                "limit": 1
+                }
+              },
+              "OutputPath": "$.Payload",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.TaskFailed"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Next": "CheckImagesFound"
+            },
+            "CheckImagesFound": {
+              "Type": "Choice",
+              "Comment": "Check if any images were found",
+              "Choices": [
+                {
+                  "Variable": "$.count",
+                  "NumericGreaterThan": 0,
+                  "Next": "ProcessImagesParallel"
+                }
+              ],
+              "Default": "NoImagesFound"
+            },
+            "NoImagesFound": {
+              "Type": "Pass",
+              "Comment": "No suitable images found for processing",
+              "Result": {
+                "status": "NO_IMAGES_FOUND",
+                "message": "No Sentinel-2 images found matching criteria"
+              },
+              "End": true
+            },
+            "ProcessImagesParallel": {
+              "Type": "Map",
+              "Comment": "Process each image in parallel",
+              "ItemsPath": "$.images",
+              "MaxConcurrency": 5,
+              "Iterator": {
+                "StartAt": "CalculateNDVI",
+                "States": {
+                  "CalculateNDVI": {
+                    "Type": "Task",
+                    "Resource": "${VegetationAnalyzerFunction.Arn}",
+                    "Comment": "Calculate NDVI from Red and NIR bands",
+                    "Parameters": {
+                      "imageId.$": "$.id",
+                      "redBandUrl.$": "$.assets.B04",
+                      "nirBandUrl.$": "$.assets.B08",
+                      "outputBucket": "forestshield-processed-data-${AWS::AccountId}"
+                    },
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "IntervalSeconds": 15,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Next": "CheckNDVISuccess"
+                  },
+                  "CheckNDVISuccess": {
+                    "Type": "Choice",
+                    "Comment": "Check if NDVI calculation succeeded",
+                    "Choices": [
+                      {
+                        "Variable": "$.success",
+                        "BooleanEquals": true,
+                        "Next": "CheckExistingModel"
+                      }
+                    ],
+                    "Default": "NDVIFailed"
+                  },
+                  "CheckExistingModel": {
+                    "Type": "Task",
+                    "Resource": "${ModelManagerFunction.Arn}",
+                    "Comment": "Check if existing model exists for this region/tile",
+                    "Parameters": {
+                      "mode": "get-latest-model",
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
+                      "region.$": "$.region"
+                    },
+                    "ResultPath": "$.existing_model",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "IntervalSeconds": 5,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Next": "DecideModelStrategy"
+                  },
+                  "DecideModelStrategy": {
+                    "Type": "Choice",
+                    "Comment": "Decide whether to use existing model or train new one",
+                    "Choices": [
+                      {
+                        "Variable": "$.existing_model.model_exists",
+                        "BooleanEquals": true,
+                        "Next": "UseExistingModel"
+                      }
+                    ],
+                    "Default": "SelectOptimalK"
+                  },
+                  "SelectOptimalK": {
+                    "Type": "Task",
+                    "Resource": "${KSelectorFunction.Arn}",
+                    "Comment": "PHASE 2.2: Dynamic K selection - Run multiple SageMaker jobs to find optimal K",
+                    "Parameters": {
+                      "mode": "select-optimal-k",
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
+                      "training_data_path.$": "$.sagemaker_training_data",
+                      "image_id.$": "$.imageId",
+                      "region.$": "$.region"
+                    },
+                    "ResultPath": "$.k_selection_result",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "IntervalSeconds": 30,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "ResultPath": "$.k_selection_error",
+                        "Next": "StartSageMakerClustering",
+                        "Comment": "Continue with default K=4 if K-selection fails"
+                      }
+                    ],
+                    "Next": "StartSageMakerClustering"
+                  },
+                  "UseExistingModel": {
+                    "Type": "Task",
+                    "Resource": "${VisualizationGeneratorFunction.Arn}",
+                    "Comment": "Generate visualizations using existing model",
+                    "Parameters": {
+                      "mode": "generate-cluster-plots",
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
+                      "pixel_data_path.$": "$.sagemaker_training_data",
+                      "sagemaker_results_path.$": "$.existing_model.metadata.model_s3_path",
+                      "model_metadata": {
+                        "model_reused": true,
+                        "existing_model.$": "$.existing_model",
+                        "image_id.$": "$.imageId",
+                        "timestamp.$": "$$.State.EnteredTime"
+                      }
+                    },
+                    "ResultPath": "$.visualizations",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "IntervalSeconds": 5,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "Next": "UseExistingModelComplete",
+                        "Comment": "Continue even if visualization generation fails"
+                      }
+                    ],
+                    "Next": "UseExistingModelComplete"
+                  },
+                  "UseExistingModelComplete": {
+                    "Type": "Pass",
+                    "Comment": "Existing model processing completed - handles both success and failure cases",
+                    "Parameters": {
+                      "imageId.$": "$.imageId",
+                      "statistics.$": "$.statistics", 
+                      "ndvi_output.$": "$.ndvi_output",
+                      "sagemaker_training_data.$": "$.sagemaker_training_data",
+                      "existing_model.$": "$.existing_model",
+                      "visualizations.$": "$.visualizations",
+                      "model_reused": true,
+                      "processing_time_ms.$": "$.processing_time_ms",
+                      "region.$": "$.region",
+                      "status": "COMPLETED_WITH_MODEL_REUSE",
+                      "analysis_complete": true
+                    },
+                    "End": true
+                  },
+                  "NDVIFailed": {
+                    "Type": "Pass",
+                    "Comment": "NDVI calculation failed",
+                    "Result": {
+                      "status": "NDVI_FAILED",
+                      "error": "Failed to calculate NDVI for image"
+                    },
+                    "End": true
+                  },
+                  "StartSageMakerClustering": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+                    "Comment": "Start SageMaker K-means clustering and wait for completion",
+                    "Parameters": {
+                      "TrainingJobName.$": "States.Format('kmeans-{}-{}-{}', States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0), States.ArrayGetItem(States.StringSplit($.imageId, '_'), 2), States.UUID())",
+                      "AlgorithmSpecification": {
+                        "TrainingImage": "174872318107.dkr.ecr.us-west-2.amazonaws.com/kmeans:1",
+                        "TrainingInputMode": "File"
+                      },
+                      "InputDataConfig": [
+                        {
+                          "ChannelName": "train",
+                          "DataSource": {
+                            "S3DataSource": {
+                              "S3DataType": "S3Prefix",
+                              "S3Uri.$": "$.sagemaker_training_data",
+                              "S3DataDistributionType": "FullyReplicated"
+                            }
+                          },
+                          "ContentType": "text/csv;label_size=0",
+                          "CompressionType": "None"
+                        }
+                      ],
+                      "OutputDataConfig": {
+                        "S3OutputPath": "s3://forestshield-processed-data-${AWS::AccountId}/sagemaker-output/"
+                      },
+                      "ResourceConfig": {
+                        "InstanceType": "ml.m5.large",
+                        "InstanceCount": 1,
+                        "VolumeSizeInGB": 10
+                      },
+                      "RoleArn": "${SageMakerExecutionRole.Arn}",
+                      "StoppingCondition": {
+                        "MaxRuntimeInSeconds": 3600
+                      },
+                      "HyperParameters": {
+                        "k.$": "States.Format('{}', $.k_selection_result.optimal_k)",
+                        "feature_dim": "5"
+                      }
+                    },
+                    "ResultPath": "$.sagemaker_result",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["SageMaker.AmazonSageMakerException"],
+                        "IntervalSeconds": 30,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2.0
+                      },
+                      {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "IntervalSeconds": 30,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "Next": "SageMakerFailed"
+                      }
+                    ],
+                    "Next": "SaveNewModel"
+                  },
+                  "SaveNewModel": {
+                    "Type": "Task",
+                    "Resource": "${ModelManagerFunction.Arn}",
+                    "Comment": "Save newly trained model for future reuse",
+                    "Parameters": {
+                      "mode": "save-new-model",
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
+                      "region.$": "$.region",
+                      "sagemaker_output_path.$": "$.sagemaker_result.ModelArtifacts.S3ModelArtifacts",
+                      "training_job_name.$": "$.sagemaker_result.TrainingJobName",
+                      "source_image_id.$": "$.imageId",
+                      "training_data_path.$": "$.sagemaker_training_data"
+                    },
+                    "ResultPath": "$.model_saved",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "IntervalSeconds": 5,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Next": "GenerateVisualizations"
+                  },
+                  "SageMakerFailed": {
+                    "Type": "Pass",
+                    "Comment": "SageMaker training job failed",
+                    "Result": {
+                      "status": "SAGEMAKER_FAILED",
+                      "error": "SageMaker K-means clustering failed"
+                    },
+                    "End": true
+                  },
+                  "GenerateVisualizations": {
+                    "Type": "Task",
+                    "Resource": "${VisualizationGeneratorFunction.Arn}",
+                    "Comment": "Generate K-means clustering visualizations and save to S3",
+                    "Parameters": {
+                      "mode": "generate-cluster-plots",
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
+                      "pixel_data_path.$": "$.sagemaker_training_data",
+                      "sagemaker_results_path.$": "$.sagemaker_result.ModelArtifacts.S3ModelArtifacts",
+                      "model_metadata": {
+                        "training_job_name.$": "$.sagemaker_result.TrainingJobName",
+                        "image_id.$": "$.imageId",
+                        "timestamp.$": "$$.State.EnteredTime"
+                      }
+                    },
+                    "ResultPath": "$.visualizations",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "IntervalSeconds": 5,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "Next": "ProcessingComplete",
+                        "Comment": "Continue even if visualization generation fails"
+                      }
+                    ],
+                    "Next": "ProcessingComplete"
+                  },
+                  "ProcessingComplete": {
+                    "Type": "Pass",
+                    "Comment": "Image processing completed successfully - NDVI calculated, SageMaker clustering done, model saved, and visualizations generated",
+                    "Parameters": {
+                      "imageId.$": "$.imageId",
+                      "statistics.$": "$.statistics", 
+                      "ndvi_output.$": "$.ndvi_output",
+                      "sagemaker_training_data.$": "$.sagemaker_training_data",
+                      "sagemaker_result.$": "$.sagemaker_result",
+                      "model_saved.$": "$.model_saved",
+                      "visualizations.$": "$.visualizations",
+                      "model_reused": false,
+                      "processing_time_ms.$": "$.processing_time_ms",
+                      "region.$": "$.region",
+                      "status": "COMPLETED",
+                      "analysis_complete": true
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "Next": "ConsolidateResults"
+            },
+            "ConsolidateResults": {
+              "Type": "Task",
+              "Resource": "${ResultsConsolidatorFunction.Arn}",
+              "Comment": "Consolidate NDVI analysis results and generate intelligent email content",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.TaskFailed"],
+                  "IntervalSeconds": 5,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Next": "SendDeforestationAlert"
+            },
+            "SendDeforestationAlert": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Comment": "Send intelligent deforestation alert with professional email content",
+              "Parameters": {
+                "TopicArn": "${AlertsTopic}",
+                "Subject.$": "$.email_content.subject",
+                "Message.$": "$.email_content.message"
+              },
+              "End": true
+            }
+          }
+        }
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DefinitionVersion
+          Value: "1.1"
+
+  # VPC for ElastiCache (App Runner will connect via VPC Connector)
+  ForestShieldVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: ForestShield-VPC
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Private Subnets for ElastiCache
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ForestShieldVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: ForestShield-Private-Subnet-1
+        - Key: Project
+          Value: ForestShield
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ForestShieldVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: ForestShield-Private-Subnet-2
+        - Key: Project
+          Value: ForestShield
+
+  # Public Subnets for NAT Gateways
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ForestShieldVPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: ForestShield-Public-Subnet-1
+        - Key: Project
+          Value: ForestShield
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ForestShieldVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: ForestShield-Public-Subnet-2
+        - Key: Project
+          Value: ForestShield
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ForestShield-IGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ForestShieldVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ForestShieldVPC
+      Tags:
+        - Key: Name
+          Value: ForestShield-Public-RT
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # NAT Gateways
+  NatGatewayEIP1:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: ForestShield-NAT-1
+
+  NatGatewayEIP2:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: ForestShield-NAT-2
+
+  # Private Route Tables
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ForestShieldVPC
+      Tags:
+        - Key: Name
+          Value: ForestShield-Private-RT-1
+  
+  PrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ForestShieldVPC
+      Tags:
+        - Key: Name
+          Value: ForestShield-Private-RT-2
+
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
+  # Security Group for Redis
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ForestShield Redis cluster
+      VpcId: !Ref ForestShieldVPC
+      Tags:
+        - Key: Name
+          Value: ForestShield-Redis-SG
+        - Key: Project
+          Value: ForestShield
+
+  # Standalone Ingress Rule to break circular dependency
+  AppRunnerToRedisIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt RedisSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !GetAtt AppRunnerSecurityGroup.GroupId
+      Description: Allow Ingress from App Runner to Redis
+
+  # Security Group for App Runner VPC Connector
+  AppRunnerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ForestShield App Runner VPC access
+      VpcId: !Ref ForestShieldVPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          DestinationSecurityGroupId: !GetAtt RedisSecurityGroup.GroupId
+          Description: Allow access to Redis
+        - IpProtocol: -1 # Allow all outbound traffic for other needs (e.g., AWS APIs)
+          CidrIp: 0.0.0.0/0
+          Description: Allow all other outbound traffic
+      Tags:
+        - Key: Name
+          Value: ForestShield-AppRunner-SG
+        - Key: Project
+          Value: ForestShield
+
+  # ElastiCache Subnet Group
+  RedisSubnetGroup:
+    Type: 'AWS::ElastiCache::SubnetGroup'
+    Properties:
+      CacheSubnetGroupName: !Sub 'fs-redis-subnet-${AWS::AccountId}-v2'
+      Description: 'Subnet group for ForestShield Redis'
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  # ElastiCache Redis Cluster (Primary + Replica for HA)
+  RedisCluster:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupId: !Sub 'forg-${AWS::StackName}-v2'
+      ReplicationGroupDescription: 'ForestShield Redis Cluster'
+      CacheNodeType: 'cache.t3.micro'
+      Engine: 'redis'
+      EngineVersion: '7.0'
+      NumCacheClusters: 2
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      MultiAZEnabled: true
+      AutomaticFailoverEnabled: true
+      AtRestEncryptionEnabled: true
+      TransitEncryptionEnabled: true
+      PreferredCacheClusterAZs:
+        - !Select [0, !GetAZs '']
+        - !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: ForestShield-Redis
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # VPC Connector for App Runner
+  VpcConnector:
+    Type: AWS::AppRunner::VpcConnector
+    Properties:
+      VpcConnectorName: !Sub "fs-vpc-conn-${AWS::AccountId}"
+      Subnets:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroups:
+        - !Ref AppRunnerSecurityGroup
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # App Runner Auto Scaling Configuration
+  AppRunnerAutoScaling:
+    Type: AWS::AppRunner::AutoScalingConfiguration
+    Properties:
+      AutoScalingConfigurationName: !Sub "fs-autoscale-${AWS::AccountId}"
+      MinSize: 1
+      MaxSize: 10
+      MaxConcurrency: 100
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  AppRunnerECRAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'FSAppRunnerECRAccessRole-${Environment}-${AWS::AccountId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # App Runner Service
+  APIService:
+    Type: AWS::AppRunner::Service
+    Properties:
+      ServiceName: !Sub "fs-api-${AWS::AccountId}"
+      SourceConfiguration:
+        AuthenticationConfiguration:
+          AccessRoleArn: !GetAtt AppRunnerECRAccessRole.Arn
+        ImageRepository:
+          ImageIdentifier: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/forestshield-api:latest'
+          ImageConfiguration:
+            Port: '3000'
+            RuntimeEnvironmentVariables:
+              - Name: NODE_ENV
+                Value: production
+              - Name: PORT
+                Value: '3000'
+              - Name: AWS_REGION
+                Value: !Ref AWS::Region
+              - Name: REDIS_HOST
+                Value: !GetAtt RedisCluster.PrimaryEndPoint.Address
+              - Name: REDIS_PORT
+                Value: !GetAtt RedisCluster.PrimaryEndPoint.Port
+              - Name: FORESTSHIELD_API_BASE_URL
+                Value: !Ref ForestShieldAPIBaseURL
+              - Name: PROCESSED_DATA_BUCKET
+                Value: !Sub 'forestshield-processed-data-${AWS::AccountId}'
+              - Name: MODELS_BUCKET
+                Value: !Sub 'forestshield-models-${AWS::AccountId}'
+              - Name: TEMP_BUCKET
+                Value: !Sub 'forestshield-temp-${AWS::AccountId}'
+              - Name: STEP_FUNCTION_ARN
+                Value: !Ref DeforestationDetectionWorkflow
+              - Name: STEP_FUNCTIONS_STATE_MACHINE_ARN
+                Value: !Ref DeforestationDetectionWorkflow
+              - Name: SNS_TOPIC_ARN
+                Value: !Ref AlertsTopic
+              - Name: SNS_DEFORESTATION_TOPIC_ARN
+                Value: !Ref AlertsTopic
+              - Name: MONITORED_REGIONS_TABLE_NAME
+                Value: !Ref MonitoredRegionsTable
+              - Name: DEFORESTATION_ALERTS_TABLE_NAME
+                Value: !Ref DeforestationAlertsTable
+              - Name: NDVI_CALCULATOR_FUNCTION_ARN
+                Value: !GetAtt VegetationAnalyzerFunction.Arn
+              - Name: SEARCH_IMAGES_FUNCTION_ARN
+                Value: !GetAtt SearchImagesFunction.Arn
+              - Name: SAGEMAKER_PROCESSOR_FUNCTION_ARN
+                Value: !GetAtt SageMakerProcessorFunction.Arn
+              - Name: SAGEMAKER_ROLE_ARN
+                Value: !GetAtt SageMakerExecutionRole.Arn
+              - Name: AWS_ACCOUNT_ID
+                Value: !Ref AWS::AccountId
+              - Name: LAMBDA_NDVI_CALCULATOR_ARN
+                Value: !GetAtt VegetationAnalyzerFunction.Arn
+              - Name: ATHENA_DATABASE
+                Value: !Sub 'forestshield_${Environment}'
+              - Name: ATHENA_GEOSPATIAL_TABLE
+                Value: !Ref AthenaTableName
+              - Name: ATHENA_WORKGROUP
+                Value: !Ref AthenaWorkgroup
+              - Name: ATHENA_OUTPUT_LOCATION
+                Value: !Sub 's3://${AthenaResultsBucket}/'
+          ImageRepositoryType: ECR
+        AutoDeploymentsEnabled: true
+      HealthCheckConfiguration:
+        Protocol: HTTP
+        Path: /health
+        Interval: 10
+        Timeout: 5
+        HealthyThreshold: 1
+        UnhealthyThreshold: 2
+      InstanceConfiguration:
+        Cpu: '1 vCPU'
+        Memory: '2 GB'
+        InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
+      AutoScalingConfigurationArn: !GetAtt AppRunnerAutoScaling.AutoScalingConfigurationArn
+      NetworkConfiguration:
+        EgressConfiguration:
+          EgressType: VPC
+          VpcConnectorArn: !GetAtt VpcConnector.VpcConnectorArn
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # App Runner Instance Role
+  AppRunnerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "FSAppRunnerRole-${AWS::AccountId}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: tasks.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+      Policies:
+        - PolicyName: ForestShieldAPIAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:ListFunctions
+                  - lambda:GetFunction
+                  - states:StartExecution
+                  - states:ListExecutions
+                  - states:DescribeExecution
+                  - sns:Publish
+                  - sns:ListSubscriptions
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:DescribeAlarms
+                  - logs:DescribeLogGroups
+                  - logs:FilterLogEvents
+                  - ce:GetCostAndUsage
+                  - ce:GetUsageForecast
+                  - sagemaker:ListTrainingJobs
+                  - sagemaker:DescribeTrainingJob
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::forestshield-processed-data-${AWS::AccountId}/*'
+                  - !Sub 'arn:aws:s3:::forestshield-models-${AWS::AccountId}/*'
+                  - !Sub 'arn:aws:s3:::forestshield-temp-${AWS::AccountId}/*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !GetAtt MonitoredRegionsTable.Arn
+                  - !GetAtt DeforestationAlertsTable.Arn
+        - PolicyName: AthenaAndGlueAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                Resource:
+                  - !Sub 'arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkgroup}'
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabases
+                  - glue:GetDatabase
+                Resource:
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                Resource:
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/forestshield_${Environment}'
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/forestshield_${Environment}/${AthenaTableName}'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                  - s3:PutObject
+                  - s3:ListBucketMultipartUploads
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource:
+                  - !GetAtt AthenaResultsBucket.Arn
+                  - !Sub '${AthenaResultsBucket.Arn}/*'
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # DynamoDB Tables
+  MonitoredRegionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'forestshield-monitored-regions-${Environment}'
+      AttributeDefinitions:
+        - AttributeName: regionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: regionId
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      BillingMode: PROVISIONED
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  DeforestationAlertsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'forestshield-deforestation-alerts-db-${Environment}'
+      AttributeDefinitions:
+        - AttributeName: alertId
+          AttributeType: S
+        - AttributeName: regionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: alertId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: RegionIdIndex
+          KeySchema:
+            - AttributeName: regionId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      BillingMode: PROVISIONED
+      Tags:
+        - Key: Project
+          Value: ForestShield
+        - Key: Environment
+          Value: !Ref Environment
+
+  # =================================================================
+  # == Geospatial / Athena Resources (For Heatmap)
+  # =================================================================
+
+  GeospatialDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub 'forestshield_${Environment}'
+        Description: 'Database for ForestShield geospatial analytics data.'
+
+  GeospatialDataTable:
+    Type: AWS::Glue::Table
+    Properties:
+      DatabaseName: !Ref GeospatialDatabase
+      CatalogId: !Ref AWS::AccountId
+      TableInput:
+        Name: 'geospatial_data'
+        Description: 'Table for storing raw pixel data with lat/lon for heatmap generation.'
+        Owner: 'hadoop'
+        StorageDescriptor:
+          Columns:
+            - Name: 'image_id'
+              Type: 'string'
+            - Name: 'timestamp'
+              Type: 'string'
+            - Name: 'ndvi'
+              Type: 'float'
+            - Name: 'red'
+              Type: 'int'
+            - Name: 'nir'
+              Type: 'int'
+            - Name: 'latitude'
+              Type: 'double'
+            - Name: 'longitude'
+              Type: 'double'
+          Location: !Sub 's3://${ProcessedDataBucket}/geospatial-data/'
+          InputFormat: 'org.apache.hadoop.mapred.TextInputFormat'
+          OutputFormat: 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+          SerdeInfo:
+            SerializationLibrary: 'org.openx.data.jsonserde.JsonSerDe'
+            Parameters:
+              'serialization.format': '1'
+              'ignore.malformed.json': 'true'
+        PartitionKeys:
+          - Name: 'year'
+            Type: 'string'
+          - Name: 'month'
+            Type: 'string'
+          - Name: 'day'
+            Type: 'string'
+        TableType: 'EXTERNAL_TABLE'
+
+  GlueCrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'FSGlueCrawlerRole-${Environment}-${AWS::AccountId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: S3AccessForCrawler
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ProcessedDataBucket}/geospatial-data/*'
+                  - !Sub 'arn:aws:s3:::${ProcessedDataBucket}'
+
+  GeospatialDataCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub 'ForestShield-Geospatial-Data-Crawler-${Environment}'
+      Role: !GetAtt GlueCrawlerRole.Arn
+      DatabaseName: !Ref GeospatialDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${ProcessedDataBucket}/geospatial-data/'
+      SchemaChangePolicy:
+        UpdateBehavior: 'UPDATE_IN_DATABASE'
+        DeleteBehavior: 'LOG'
+      Configuration: >-
+        {
+          "Version": 1.0,
+          "CrawlerOutput": {
+            "Partitions": { "AddOrUpdateBehavior": "InheritFromTable" }
+          }
+        }
+      Schedule:
+        ScheduleExpression: 'cron(0 1 * * ? *)' # Run once a day at 1 AM UTC
+
+  # Custom Resource to trigger the crawler on deployment
+  CrawlerStartRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'FSCrawlerStartRole-${Environment}-${AWS::AccountId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'GlueCrawlerStartPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'glue:StartCrawler'
+                Resource: !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:crawler/${GeospatialDataCrawler}'
+              - Effect: Allow
+                Action: 'glue:GetCrawler'
+                Resource: !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:crawler/${GeospatialDataCrawler}'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  CrawlerStartFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'forestshield-crawler-start-trigger-${Environment}'
+      Handler: 'index.handler'
+      Role: !GetAtt CrawlerStartRole.Arn
+      Runtime: 'python3.9'
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+          import time
+          import os
+
+          def handler(event, context):
+              response_status = cfnresponse.SUCCESS
+              physical_resource_id = event.get('PhysicalResourceId')
+              
+              try:
+                  crawler_name = event['ResourceProperties']['CrawlerName']
+                  glue = boto3.client('glue')
+
+                  if event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                      print(f"Starting crawler: {crawler_name}")
+                      glue.start_crawler(Name=crawler_name)
+                      
+                      timeout = time.time() + 270 # 4.5 minutes, slightly less than Lambda timeout
+                      
+                      while True:
+                          if time.time() > timeout:
+                              raise Exception("Timed out waiting for crawler to finish.")
+                              
+                          crawler_status = glue.get_crawler(Name=crawler_name)
+                          state = crawler_status['Crawler']['State']
+                          print(f"Current crawler state: {state}")
+                          
+                          if state == 'READY':
+                              print("Crawler finished successfully.")
+                              break
+                          elif state == 'STOPPING' or state == 'FAILED':
+                              raise Exception(f"Crawler entered a failed state: {state}")
+                          
+                          time.sleep(15)
+
+              except Exception as e:
+                  print(f"Error during crawler execution: {e}")
+                  response_status = cfnresponse.FAILED
+              finally:
+                  cfnresponse.send(event, context, response_status, {}, physical_resource_id=crawler_name if crawler_name else "crawler-trigger")
+
+  TriggerCrawlerOnDeploy:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: GeospatialDataCrawler
+    Properties:
+      ServiceToken: !GetAtt CrawlerStartFunction.Arn
+      CrawlerName: !Ref GeospatialDataCrawler
+
+Outputs:
+  ProcessedDataBucket:
+    Description: 'S3 bucket for processed data'
+    Value: !Sub 'forestshield-processed-data-${AWS::AccountId}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ProcessedDataBucket'
+
+  ModelsBucket:
+    Description: 'S3 bucket for ML models'
+    Value: !Sub 'forestshield-models-${AWS::AccountId}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ModelsBucket'
+
+  TempBucket:
+    Description: 'S3 bucket for temporary files'
+    Value: !Sub 'forestshield-temp-${AWS::AccountId}'
+    Export:
+      Name: !Sub '${AWS::StackName}-TempBucket'
+
+  AlertsTopicArn:
+    Description: 'SNS topic ARN for deforestation alerts'
+    Value: !Ref AlertsTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-AlertsTopicArn'
+
+  StepFunctionArn:
+    Description: 'Step Functions state machine ARN'
+    Value: !Ref DeforestationDetectionWorkflow
+    Export:
+      Name: !Sub '${AWS::StackName}-StepFunctionArn'
+
+  LambdaExecutionRoleArn:
+    Description: 'Lambda execution role ARN'
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaExecutionRoleArn'
+
+  SageMakerExecutionRoleArn:
+    Description: 'SageMaker execution role ARN'
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SageMakerExecutionRoleArn'
+
+  MonitoredRegionsTableName:
+    Description: 'DynamoDB table for monitored regions'
+    Value: !Ref MonitoredRegionsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-MonitoredRegionsTableName'
+  
+  DeforestationAlertsTableName:
+    Description: 'DynamoDB table for deforestation alerts'
+    Value: !Ref DeforestationAlertsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DeforestationAlertsTableName'
+
+  NdivCalculatorFunctionArn:
+    Description: 'NDVI Calculator Lambda Function ARN'
+    Value: !GetAtt VegetationAnalyzerFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NdivCalculatorFunctionArn'
+  
+  SearchImagesFunctionArn:
+    Description: 'Search Images Lambda Function ARN'
+    Value: !GetAtt SearchImagesFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SearchImagesFunctionArn'
+
+  SageMakerProcessorFunctionArn:
+    Description: 'SageMaker Processor Lambda Function ARN'
+    Value: !GetAtt SageMakerProcessorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SageMakerProcessorFunctionArn'
+
+  APIServiceUrl:
+    Description: 'App Runner service URL'
+    Value: !Sub 'https://${APIService.ServiceUrl}'
+    Export:
+      Name: !Sub '${AWS::StackName}-APIServiceUrl'
+
+  APICustomDomainUrl:
+    Description: 'Custom domain URL for ForestShield API'
+    Value: 'https://api.forestshieldapp.com'
+    Export:
+      Name: !Sub '${AWS::StackName}-APICustomDomainUrl'
+
+  RedisEndpoint:
+    Description: 'Redis cluster endpoint'
+    Value: !GetAtt RedisCluster.PrimaryEndPoint.Address
+    Export:
+      Name: !Sub '${AWS::StackName}-RedisEndpoint' 

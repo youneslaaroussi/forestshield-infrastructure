@@ -102,13 +102,16 @@ public class SearchImagesHandler implements RequestHandler<Object, Object>, Reso
             String endDate = requestBody.get("endDate").asText();
             double cloudCover = requestBody.has("cloudCover") && requestBody.get("cloudCover") != null 
                 ? requestBody.get("cloudCover").asDouble() : 20.0;
+            int limit = requestBody.has("limit") && requestBody.get("limit") != null 
+                ? requestBody.get("limit").asInt() : 50;
             
             System.out.println(String.format("Searching images for coordinates: %.2f, %.2f", latitude, longitude));
             System.out.println(String.format("Date range: %s to %s", startDate, endDate));
             System.out.println(String.format("Max cloud cover: %.1f%%", cloudCover));
+            System.out.println(String.format("Image limit: %d", limit));
             
             // Search for Sentinel-2 images
-            List<SentinelImage> images = searchSentinelImages(latitude, longitude, startDate, endDate, cloudCover);
+            List<SentinelImage> images = searchSentinelImages(latitude, longitude, startDate, endDate, cloudCover, limit);
             
             // Create response
             Map<String, Object> responseBody = new HashMap<>();
@@ -148,7 +151,7 @@ public class SearchImagesHandler implements RequestHandler<Object, Object>, Reso
         }
     }
     
-    private List<SentinelImage> searchSentinelImages(double latitude, double longitude, String startDate, String endDate, double cloudCover) throws Exception {
+    private List<SentinelImage> searchSentinelImages(double latitude, double longitude, String startDate, String endDate, double cloudCover, int limit) throws Exception {
         // Create bounding box around the point (±0.1 degrees = ~11km)
         double[] bbox = {
             longitude - 0.1,
@@ -159,7 +162,7 @@ public class SearchImagesHandler implements RequestHandler<Object, Object>, Reso
         
         // Build STAC search payload
         Map<String, Object> searchPayload = new HashMap<>();
-        searchPayload.put("limit", 50);
+        searchPayload.put("limit", limit);
         searchPayload.put("datetime", startDate + "T00:00:00Z/" + endDate + "T23:59:59Z");
         searchPayload.put("bbox", bbox);
         searchPayload.put("collections", List.of("sentinel-2-l2a"));
