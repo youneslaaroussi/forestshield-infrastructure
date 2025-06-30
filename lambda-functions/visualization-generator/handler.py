@@ -64,6 +64,7 @@ def generate_cluster_visualizations(event):
     Generate comprehensive K-means clustering visualizations
     """
     
+    region_id = event.get('regionId')
     tile_id = event.get('tile_id')
     pixel_data_path = event.get('pixel_data_path')
     sagemaker_results_path = event.get('sagemaker_results_path')
@@ -93,7 +94,14 @@ def generate_cluster_visualizations(event):
         
         # 2. Create timestamp for organized storage
         timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
-        viz_prefix = f"{VISUALIZATION_PREFIX}/{tile_id}/{timestamp}"
+        
+        # Use region_id in the path if available for better organization
+        if region_id:
+            viz_prefix = f"{VISUALIZATION_PREFIX}/{region_id}/{tile_id}/{timestamp}"
+            logger.info(f"💾 Storing visualizations under region-specific path: {viz_prefix}")
+        else:
+            viz_prefix = f"{VISUALIZATION_PREFIX}/{tile_id}/{timestamp}"
+            logger.warning(f"⚠️ region_id not provided, using legacy path: {viz_prefix}")
         
         # 3. Generate different types of visualizations
         visualization_urls = {}

@@ -23,7 +23,10 @@ import {
   AlertLevel, 
   RegionStatus,
   VisualizationDto,
-  RegionVisualizationsDto
+  RegionVisualizationsDto,
+  RegionAnalysisControlDto,
+  StartAnalysisDto,
+  AnalysisScheduleDto
 } from './dto/dashboard.dto';
 import { DashboardService } from './services/dashboard.service';
 import { AWSMonitoringService } from './services/aws-monitoring.service';
@@ -34,6 +37,7 @@ import { SentinelService } from './sentinel.service';
 import { ConfigService } from '@nestjs/config';
 import { AWSService } from './services/aws.service';
 import { GeospatialService } from './services/geospatial.service';
+import { QueueService } from '../queue/queue.service';
 
 @Controller('dashboard')
 export class DashboardController {
@@ -49,6 +53,7 @@ export class DashboardController {
     private readonly configService: ConfigService,
     private readonly awsService: AWSService,
     private readonly geospatialService: GeospatialService,
+    private readonly queueService: QueueService,
   ) {}
 
   // =============================================
@@ -248,6 +253,416 @@ export class DashboardController {
     };
   }
 
+  @Post('regions/:regionId/start-analysis')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Start interval-based analysis',
+    description: 'Starts automated interval-based (cron) analysis for a specific region'
+  })
+  @ApiParam({ name: 'regionId', description: 'Unique region identifier' })
+  @ApiBody({ type: StartAnalysisDto, required: false })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Interval analysis started successfully',
+    type: RegionAnalysisControlDto 
+  })
+  @ApiResponse({ status: 404, description: 'Region not found' })
+  async startIntervalAnalysis(
+    @Param('regionId') regionId: string,
+    @Body() startAnalysisDto?: StartAnalysisDto
+  ): Promise<RegionAnalysisControlDto> {
+    this.logger.log(`Starting interval analysis for region: ${regionId}`);
+    const region = await this.dashboardService.getRegionById(regionId);
+    if (!region) {
+      throw new HttpException('Region not found', HttpStatus.NOT_FOUND);
+    }
+
+    const cronExpression = startAnalysisDto?.cronExpression || '*/30 * * * *'; // Default: every 30 minutes
+    
+    // Start the cron job using QueueService
+    await this.queueService.startRegionAnalysis(
+      regionId,
+      cronExpression,
+      {
+        latitude: region.latitude,
+        longitude: region.longitude,
+        cloudCoverThreshold: region.cloudCoverThreshold ?? 20,
+      },
+      startAnalysisDto?.triggerImmediate || false
+    );
+
+    // Update region status to ACTIVE
+    const updatedRegion = await this.dashboardService.updateRegion(regionId, {
+      status: RegionStatus.ACTIVE
+    });
+
+    this.logger.log(`✅ Interval analysis started for region ${regionId} with schedule: ${cronExpression}`);
+    
+    return {
+      regionId: updatedRegion.regionId,
+      status: updatedRegion.status,
+      cronExpression,
+      updatedAt: new Date().toISOString(),
+      message: `Automated analysis started with cron expression: ${cronExpression}`
+    };
+  }
+
+  @Post('regions/:regionId/pause-analysis')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Pause interval-based analysis',
+    description: 'Pauses automated interval-based (cron) analysis for a specific region'
+  })
+  @ApiParam({ name: 'regionId', description: 'Unique region identifier' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Interval analysis paused successfully',
+    type: RegionAnalysisControlDto 
+  })
+  @ApiResponse({ status: 404, description: 'Region not found' })
+  async pauseIntervalAnalysis(@Param('regionId') regionId: string): Promise<RegionAnalysisControlDto> {
+    this.logger.log(`Pausing interval analysis for region: ${regionId}`);
+    const region = await this.dashboardService.getRegionById(regionId);
+    if (!region) {
+      throw new HttpException('Region not found', HttpStatus.NOT_FOUND);
+    }
+
+    // Stop the cron job using QueueService
+    await this.queueService.stopRegionAnalysis(regionId);
+
+    // Update region status to PAUSED
+    const updatedRegion = await this.dashboardService.updateRegion(regionId, {
+      status: RegionStatus.PAUSED
+    });
+
+    this.logger.log(`⏸️ Interval analysis paused for region ${regionId}`);
+
+    return {
+      regionId: updatedRegion.regionId,
+      status: updatedRegion.status,
+      cronExpression: null,
+      updatedAt: new Date().toISOString(),
+      message: 'Automated analysis paused successfully'
+    };
+  }
+
+  @Get('regions/:regionId/analysis-schedule')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Get analysis schedule status',
+    description: 'Returns the current interval analysis schedule and status for a region'
+  })
+  @ApiParam({ name: 'regionId', description: 'Unique region identifier' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Analysis schedule retrieved successfully',
+    type: AnalysisScheduleDto 
+  })
+  @ApiResponse({ status: 404, description: 'Region not found' })
+  async getAnalysisSchedule(@Param('regionId') regionId: string): Promise<AnalysisScheduleDto> {
+    this.logger.log(`Getting analysis schedule for region: ${regionId}`);
+    const region = await this.dashboardService.getRegionById(regionId);
+    if (!region) {
+      throw new HttpException('Region not found', HttpStatus.NOT_FOUND);
+    }
+
+    // Get active cron jobs from QueueService
+    const activeJobs = this.queueService.getActiveJobs();
+    const regionJob = activeJobs.find(job => job.regionId === regionId);
+
+    const cronExpression = regionJob?.isRunning ? '*/30 * * * *' : ''; // Default or stored expression
+    const nextAnalysis = regionJob?.nextExecution?.toISOString() || '';
+
+    // Get recent monitoring jobs for this region to calculate analyses count
+    const recentJobs = await this.dashboardService.getMonitoringJobs();
+    const regionJobs = recentJobs.filter(job => job.regionId === regionId);
+    const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const analysesLast24h = regionJobs.filter(job => 
+      new Date(job.startTime) >= last24h
+    ).length;
+
+    return {
+      regionId: region.regionId,
+      regionName: region.name,
+      status: region.status,
+      cronExpression,
+      nextAnalysis,
+      lastAnalysis: region.lastAnalysis,
+      analysesLast24h,
+      isActive: regionJob?.isRunning || false
+    };
+  }
+
+  @Post('regions/bulk-analysis-control')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Bulk start/pause analysis for multiple regions',
+    description: 'Starts or pauses automated analysis for multiple regions at once'
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        regionIds: {
+          type: 'array',
+          items: { type: 'string' },
+          example: ['region-123abc', 'region-456def']
+        },
+        action: {
+          type: 'string',
+          enum: ['start', 'pause'],
+          example: 'start'
+        },
+        cronExpression: {
+          type: 'string',
+          example: '*/15 * * * *',
+          description: 'Cron expression (only used for start action)'
+        },
+        triggerImmediate: {
+          type: 'boolean',
+          example: false,
+          description: 'Whether to trigger immediate analysis (only used for start action)'
+        }
+      },
+      required: ['regionIds', 'action']
+    }
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Bulk operation completed',
+    schema: {
+      type: 'object',
+      properties: {
+        successful: {
+          type: 'array',
+          items: { $ref: '#/components/schemas/RegionAnalysisControlDto' }
+        },
+        failed: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              regionId: { type: 'string' },
+              error: { type: 'string' }
+            }
+          }
+        },
+        summary: {
+          type: 'object',
+          properties: {
+            total: { type: 'number' },
+            successful: { type: 'number' },
+            failed: { type: 'number' }
+          }
+        }
+      }
+    }
+  })
+  async bulkAnalysisControl(@Body() body: {
+    regionIds: string[];
+    action: 'start' | 'pause';
+    cronExpression?: string;
+    triggerImmediate?: boolean;
+  }): Promise<{
+    successful: RegionAnalysisControlDto[];
+    failed: Array<{ regionId: string; error: string }>;
+    summary: { total: number; successful: number; failed: number };
+  }> {
+    this.logger.log(`Bulk ${body.action} analysis for ${body.regionIds.length} regions`);
+    
+    const successful: RegionAnalysisControlDto[] = [];
+    const failed: Array<{ regionId: string; error: string }> = [];
+
+    for (const regionId of body.regionIds) {
+      try {
+        if (body.action === 'start') {
+          const result = await this.startIntervalAnalysis(regionId, {
+            cronExpression: body.cronExpression,
+            triggerImmediate: body.triggerImmediate
+          });
+          successful.push(result);
+        } else {
+          const result = await this.pauseIntervalAnalysis(regionId);
+          successful.push(result);
+        }
+      } catch (error) {
+        failed.push({
+          regionId,
+          error: error.message || 'Unknown error'
+        });
+      }
+    }
+
+    return {
+      successful,
+      failed,
+      summary: {
+        total: body.regionIds.length,
+        successful: successful.length,
+        failed: failed.length
+      }
+    };
+  }
+
+  @Get('regions/analysis-schedules')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Get all region analysis schedules',
+    description: 'Returns the analysis schedule status for all regions'
+  })
+  @ApiQuery({ name: 'status', required: false, enum: RegionStatus, description: 'Filter by region status' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Analysis schedules retrieved successfully',
+    type: [AnalysisScheduleDto] 
+  })
+  async getAllAnalysisSchedules(@Query('status') status?: RegionStatus): Promise<AnalysisScheduleDto[]> {
+    this.logger.log(`Getting analysis schedules for all regions${status ? ` with status: ${status}` : ''}`);
+    
+    const regions = await this.dashboardService.getAllRegions(status);
+    const recentJobs = await this.dashboardService.getMonitoringJobs();
+    
+    const schedules: AnalysisScheduleDto[] = [];
+    
+    for (const region of regions) {
+      const cronExpression = region.status === RegionStatus.ACTIVE ? '*/30 * * * *' : '';
+      const now = new Date();
+      const nextAnalysis = region.status === RegionStatus.ACTIVE 
+        ? new Date(now.getTime() + 30 * 60 * 1000).toISOString()
+        : '';
+
+      // Count recent analyses for this region
+      const regionJobs = recentJobs.filter(job => job.regionId === region.regionId);
+      const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const analysesLast24h = regionJobs.filter(job => 
+        new Date(job.startTime) >= last24h
+      ).length;
+
+      schedules.push({
+        regionId: region.regionId,
+        regionName: region.name,
+        status: region.status,
+        cronExpression,
+        nextAnalysis,
+        lastAnalysis: region.lastAnalysis,
+        analysesLast24h,
+        isActive: region.status === RegionStatus.ACTIVE
+      });
+    }
+
+    return schedules;
+  }
+
+  @Get('queue/status')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Get queue status and statistics',
+    description: 'Returns current status and statistics of the analysis job queue'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Queue status retrieved successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        queueStats: {
+          type: 'object',
+          properties: {
+            waiting: { type: 'number' },
+            active: { type: 'number' },
+            completed: { type: 'number' },
+            failed: { type: 'number' },
+            delayed: { type: 'number' }
+          }
+        },
+        activeJobs: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              regionId: { type: 'string' },
+              isRunning: { type: 'boolean' },
+              nextExecution: { type: 'string' }
+            }
+          }
+        }
+      }
+    }
+  })
+  async getQueueStatus(): Promise<{
+    queueStats: {
+      waiting: number;
+      active: number;
+      completed: number;
+      failed: number;
+      delayed: number;
+    };
+    activeJobs: Array<{ regionId: string; isRunning: boolean; nextExecution?: Date }>;
+  }> {
+    this.logger.log('Getting queue status and statistics');
+    
+    const queueStats = await this.queueService.getQueueStats();
+    const activeJobs = this.queueService.getActiveJobs();
+
+    return {
+      queueStats,
+      activeJobs
+    };
+  }
+
+  @Post('queue/cleanup')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Clean up old queue jobs',
+    description: 'Removes old completed and failed jobs from the queue to free up memory'
+  })
+  @ApiResponse({ status: 200, description: 'Queue cleanup completed successfully' })
+  async cleanupQueue(): Promise<{ message: string }> {
+    this.logger.log('Cleaning up old queue jobs');
+    await this.queueService.cleanupOldJobs();
+    return { message: 'Queue cleanup completed successfully' };
+  }
+
+  @Post('queue/pause-all')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Pause all region analysis jobs',
+    description: 'Pauses all currently active cron jobs for all regions'
+  })
+  @ApiResponse({ status: 200, description: 'All analysis jobs paused successfully' })
+  async pauseAllAnalysis(): Promise<{ message: string; pausedJobs: number }> {
+    this.logger.log('Pausing all region analysis jobs');
+    const activeJobs = this.queueService.getActiveJobs();
+    const pausedCount = activeJobs.filter(job => job.isRunning).length;
+    
+    await this.queueService.pauseAll();
+    
+    return { 
+      message: 'All analysis jobs paused successfully',
+      pausedJobs: pausedCount
+    };
+  }
+
+  @Post('queue/resume-all')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Resume all region analysis jobs',
+    description: 'Resumes all paused cron jobs for all regions'
+  })
+  @ApiResponse({ status: 200, description: 'All analysis jobs resumed successfully' })
+  async resumeAllAnalysis(): Promise<{ message: string; resumedJobs: number }> {
+    this.logger.log('Resuming all region analysis jobs');
+    const activeJobs = this.queueService.getActiveJobs();
+    const resumedCount = activeJobs.length;
+    
+    await this.queueService.resumeAll();
+    
+    return { 
+      message: 'All analysis jobs resumed successfully',
+      resumedJobs: resumedCount
+    };
+  }
+
   @Get('regions/:regionId/ndvi-images')
   @ApiTags('Monitoring & Analysis')
   @ApiOperation({ 
@@ -405,10 +820,11 @@ export class DashboardController {
     }
 
     const bucketName = this.configService.get<string>('PROCESSED_DATA_BUCKET') || 'forestshield-processed-data-381492060635';
-    const visualizationPrefix = 'visualizations/';
+    // Construct a prefix that is specific to the region to only list its visualizations
+    const visualizationPrefix = `visualizations/${regionId}/`;
 
     try {
-      // List all visualization objects in S3
+      // List all visualization objects in S3 for the specific region
       const listParams = {
         Bucket: bucketName,
         Prefix: visualizationPrefix,
@@ -420,12 +836,12 @@ export class DashboardController {
 
       for (const obj of s3Objects) {
         if (obj.Key && obj.Key.endsWith('.png')) {
-          // Parse the S3 key: visualizations/{tileId}/{timestamp}/{chartType}.png
+          // The key is now expected to be: visualizations/{regionId}/{tileId}/{timestamp}/{chartType}.png
           const keyParts = obj.Key.split('/');
-          if (keyParts.length >= 4) {
-            const tileId = keyParts[1];
-            const timestamp = keyParts[2];
-            const fileName = keyParts[3];
+          if (keyParts.length >= 5) {
+            const tileId = keyParts[2];
+            const timestamp = keyParts[3];
+            const fileName = keyParts[4];
             const chartType = fileName.replace('.png', '');
 
             // Map chart types to human-readable descriptions

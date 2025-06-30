@@ -4,6 +4,7 @@ import { HttpModule } from '@nestjs/axios';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { SentinelModule } from './sentinel/sentinel.module';
+import { QueueModule } from './queue/queue.module';
 import { HealthController } from './health.controller';
 import { RedisModule } from './redis/redis.module';
 
@@ -14,6 +15,7 @@ import { RedisModule } from './redis/redis.module';
     }),
     HttpModule,
     RedisModule,
+    QueueModule,
     SentinelModule,
   ],
   controllers: [AppController, HealthController],

@@ -97,7 +97,7 @@ export class AWSActivityService {
 
   private readonly forestShieldFunctions = [
     'forestshield-vegetation-analyzer',
-    'forestshield-model-manager',
+    'forestshield-model-manager-dev',
     'forestshield-k-selector',
     'forestshield-results-consolidator',
     'forestshield-visualization-generator'

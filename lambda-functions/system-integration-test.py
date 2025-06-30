@@ -294,7 +294,7 @@ class SystemIntegrationTester:
         
         lambda_functions = [
             'forestshield-vegetation-analyzer',
-            'forestshield-model-manager',
+            'forestshield-model-manager-dev',
             'forestshield-k-selector',
             'forestshield-results-consolidator',
             'forestshield-visualization-generator'
@@ -633,7 +633,7 @@ class SystemIntegrationTester:
         """Check Lambda function health"""
         functions = [
             'forestshield-vegetation-analyzer',
-            'forestshield-model-manager',
+            'forestshield-model-manager-dev',
             'forestshield-k-selector',
             'forestshield-results-consolidator',
             'forestshield-visualization-generator'
@@ -739,7 +739,7 @@ class SystemIntegrationTester:
                 'recommendation': 'well-sized'
             },
             {
-                'function_name': 'forestshield-model-manager',
+                'function_name': 'forestshield-model-manager-dev',
                 'max_memory_used': 512,
                 'allocated_memory': 1024,
                 'utilization_rate': 0.50,

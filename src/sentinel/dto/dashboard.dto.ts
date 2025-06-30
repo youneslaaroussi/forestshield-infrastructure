@@ -89,7 +89,7 @@ export class RegionDto extends CreateRegionDto {
 
 export class AlertDto {
   @ApiProperty({ example: 'alert-456def', description: 'Unique alert identifier' })
-  id: string;
+  alertId: string;
 
   @ApiProperty({ example: 'region-123abc', description: 'Region identifier that triggered the alert' })
   regionId: string;
@@ -256,4 +256,61 @@ export class RegionVisualizationsDto {
 
   @ApiProperty({ example: '2024-12-15T14:30:00Z', description: 'When this data was retrieved' })
   retrievedAt: string;
+}
+
+export class RegionAnalysisControlDto {
+  @ApiProperty({ example: 'region-123abc', description: 'Region identifier' })
+  regionId: string;
+
+  @ApiProperty({ enum: RegionStatus, example: RegionStatus.ACTIVE, description: 'New monitoring status' })
+  status: RegionStatus;
+
+  @ApiProperty({ example: '*/15 * * * *', description: 'Cron expression for analysis interval (optional)', required: false })
+  @IsOptional()
+  @IsString()
+  cronExpression?: string;
+
+  @ApiProperty({ example: '2024-01-15T10:30:00Z', description: 'When the status change was applied' })
+  updatedAt: string;
+
+  @ApiProperty({ example: 'Automated analysis started with 15-minute intervals', description: 'Status change message' })
+  message: string;
+}
+
+export class StartAnalysisDto {
+  @ApiPropertyOptional({ example: '*/30 * * * *', description: 'Cron expression for analysis interval (default: every 30 minutes)' })
+  @IsOptional()
+  @IsString()
+  cronExpression?: string;
+
+  @ApiPropertyOptional({ example: true, description: 'Whether to trigger immediate analysis when starting (default: false)' })
+  @IsOptional()
+  @IsBoolean()
+  triggerImmediate?: boolean;
+}
+
+export class AnalysisScheduleDto {
+  @ApiProperty({ example: 'region-123abc', description: 'Region identifier' })
+  regionId: string;
+
+  @ApiProperty({ example: 'Amazon Rainforest - Sector A', description: 'Region name' })
+  regionName: string;
+
+  @ApiProperty({ enum: RegionStatus, example: RegionStatus.ACTIVE, description: 'Current monitoring status' })
+  status: RegionStatus;
+
+  @ApiProperty({ example: '*/30 * * * *', description: 'Current cron expression for analysis interval' })
+  cronExpression: string;
+
+  @ApiProperty({ example: '2024-01-15T10:30:00Z', description: 'Next scheduled analysis time' })
+  nextAnalysis: string;
+
+  @ApiProperty({ example: '2024-01-15T10:00:00Z', description: 'Last analysis time' })
+  lastAnalysis: string;
+
+  @ApiProperty({ example: 24, description: 'Number of analyses completed in last 24 hours' })
+  analysesLast24h: number;
+
+  @ApiProperty({ example: true, description: 'Whether automated analysis is currently active' })
+  isActive: boolean;
 } 

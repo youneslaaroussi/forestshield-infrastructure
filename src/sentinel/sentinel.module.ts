@@ -12,11 +12,13 @@ import { DashboardService } from './services/dashboard.service';
 import { AWSRealtimeGateway } from './aws-realtime.gateway';
 import { GeospatialService } from './services/geospatial.service';
 import { RedisModule } from '../redis/redis.module';
+import { QueueModule } from '../queue/queue.module';
 
 @Module({
   imports: [
     HttpModule,
     RedisModule,
+    QueueModule,
   ],
   controllers: [SentinelController, DashboardController],
   providers: [
@@ -30,6 +32,6 @@ import { RedisModule } from '../redis/redis.module';
     AWSRealtimeGateway,
     GeospatialService
   ],
-  exports: [SentinelService, DashboardService, GeospatialService],
+  exports: [SentinelService, DashboardService, GeospatialService, AWSRealtimeGateway],
 })
 export class SentinelModule {} 

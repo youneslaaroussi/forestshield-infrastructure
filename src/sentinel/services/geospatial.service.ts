@@ -46,6 +46,20 @@ export class GeospatialService {
   ): Promise<HeatmapPoint[]> {
     this.logger.log(`Fetching heatmap data for bounding box: [${north}, ${west}] to [${south}, ${east}]`);
 
+    // --- Bounding Box Expansion ---
+    // Expand the bounding box to be less restrictive and find nearby data.
+    // This helps when the user's viewport doesn't perfectly align with data points.
+    const latitudinal_expansion = (north - south) * 0.25; // Expand by 25%
+    const longitudinal_expansion = (east - west) * 0.25;
+
+    const expanded_north = north + latitudinal_expansion;
+    const expanded_south = south - latitudinal_expansion;
+    const expanded_east = east + longitudinal_expansion;
+    const expanded_west = west - longitudinal_expansion;
+
+    this.logger.log(`Expanded bounding box to: [${expanded_north}, ${expanded_west}] to [${expanded_south}, ${expanded_east}]`);
+
+
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
     
@@ -54,8 +68,8 @@ export class GeospatialService {
       SELECT latitude, longitude, ndvi
       FROM "${this.athenaDatabase}"."${this.athenaTable}"
       WHERE date_parse(substr(timestamp, 1, 10), '%Y-%m-%d') >= date('${startDate.toISOString().split('T')[0]}')
-        AND latitude BETWEEN ${south} AND ${north}
-        AND longitude BETWEEN ${west} AND ${east}
+        AND latitude BETWEEN ${expanded_south} AND ${expanded_north}
+        AND longitude BETWEEN ${expanded_west} AND ${expanded_east}
       LIMIT 10000;
     `;
 
@@ -65,7 +79,27 @@ export class GeospatialService {
       const queryExecutionId = await this.startQuery(query);
       await this.waitForQueryToComplete(queryExecutionId);
       const results = await this.getQueryResults(queryExecutionId);
-      return this.parseResults(results);
+      let points = this.parseResults(results);
+
+      // If no results are found in the bounding box, fetch the most recent data from anywhere as a fallback.
+      if (points.length === 0) {
+        this.logger.log('No data found in the specified bounding box. Executing a fallback query for recent global data.');
+        
+        const fallbackQuery = `
+          SELECT latitude, longitude, ndvi
+          FROM "${this.athenaDatabase}"."${this.athenaTable}"
+          WHERE date_parse(substr(timestamp, 1, 10), '%Y-%m-%d') >= date('${startDate.toISOString().split('T')[0]}')
+          LIMIT 5000;
+        `;
+
+        this.logger.debug(`Executing Athena fallback query: ${fallbackQuery}`);
+        const fallbackQueryId = await this.startQuery(fallbackQuery);
+        await this.waitForQueryToComplete(fallbackQueryId);
+        const fallbackResults = await this.getQueryResults(fallbackQueryId);
+        points = this.parseResults(fallbackResults);
+      }
+
+      return points;
     } catch (error) {
       if (error.message && error.message.includes('TABLE_NOT_FOUND')) {
         this.logger.warn(`Athena table '${this.athenaTable}' not found or not yet populated. Returning empty heatmap. This is expected on a new deployment.`);

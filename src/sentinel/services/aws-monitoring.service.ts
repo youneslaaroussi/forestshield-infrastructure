@@ -96,7 +96,7 @@ export class AWSMonitoringService {
   private readonly forestShieldFunctions = [
     'forestshield-vegetation-analyzer',
     'forestshield-results-consolidator', 
-    'forestshield-model-manager',
+    'forestshield-model-manager-dev',
     'forestshield-visualization-generator',
     'forestshield-k-selector',
     'forestshield-search-images',

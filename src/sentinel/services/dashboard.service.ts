@@ -124,10 +124,10 @@ export class DashboardService {
     return items;
   }
 
-  async acknowledgeAlert(id: string): Promise<AlertDto> {
+  async acknowledgeAlert(alertId: string): Promise<AlertDto> {
     const command = new UpdateCommand({
       TableName: this.alertsTable,
-      Key: { id },
+      Key: { alertId },
       UpdateExpression: 'SET acknowledged = :acknowledged',
       ExpressionAttributeValues: { ':acknowledged': true },
       ReturnValues: 'ALL_NEW',
@@ -143,7 +143,7 @@ export class DashboardService {
     else if (deforestationPercentage > 5) level = AlertLevel.MODERATE;
 
     const newAlert: AlertDto = {
-      id: randomUUID(),
+      alertId: randomUUID(),
       regionId: region.regionId,
       regionName: region.name,
       level,
@@ -523,7 +523,7 @@ export class DashboardService {
       
       // Invoke model-manager Lambda to track performance
       const command = new InvokeCommand({
-        FunctionName: 'forestshield-model-manager',
+        FunctionName: 'forestshield-model-manager-dev',
         InvocationType: 'Event', // Async
         Payload: JSON.stringify({
           mode: 'track-model-performance',
@@ -838,7 +838,7 @@ export class DashboardService {
     try {
       // Invoke the model-manager Lambda function to track performance
       const command = new InvokeCommand({
-        FunctionName: 'forestshield-model-manager',
+        FunctionName: 'forestshield-model-manager-dev',
         InvocationType: 'Event', // Async invoke
         Payload: JSON.stringify({
           mode: 'track-model-performance',

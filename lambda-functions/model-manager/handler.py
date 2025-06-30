@@ -4,6 +4,10 @@ import json
 import logging
 from datetime import datetime
 from statistics import mean, stdev
+import tarfile
+from io import BytesIO
+import joblib
+import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -205,10 +209,42 @@ def get_model_history(event):
         logger.error(f"❌ Error getting model history for {tile_id} in region {region}: {e}")
         raise
 
+def _load_model_from_s3(model_s3_path):
+    """Downloads, extracts, and loads a scikit-learn model from S3."""
+    try:
+        bucket_name, key = model_s3_path.replace("s3://", "").split("/", 1)
+        logger.info(f"Loading model from s3://{bucket_name}/{key}")
+        
+        response = s3.get_object(Bucket=bucket_name, Key=key)
+        model_data = response['Body'].read()
+        
+        # Use BytesIO to treat the byte stream as a file
+        with BytesIO(model_data) as bio:
+            # Open the tar.gz file
+            with tarfile.open(fileobj=bio, mode="r:gz") as tar:
+                # Find the model file inside the archive (assuming it's model.joblib or similar)
+                model_file_name = next((m.name for m in tar.getmembers() if m.isfile() and 'model' in m.name), None)
+                if not model_file_name:
+                    raise FileNotFoundError("Could not find a model file in the archive.")
+                
+                # Extract the model file into a BytesIO object
+                model_file_obj = tar.extractfile(model_file_name)
+                if model_file_obj:
+                    with BytesIO(model_file_obj.read()) as model_bio:
+                        model = joblib.load(model_bio)
+                        logger.info(f"✅ Model {model_file_name} loaded successfully.")
+                        return model
+                else:
+                    raise FileNotFoundError("Could not extract model file object.")
+
+    except Exception as e:
+        logger.error(f"❌ Failed to load model from {model_s3_path}: {e}")
+        raise
+
 def compare_models(event):
     """
-    Enhanced cluster-based change detection
-    Compares current and historical models using metadata and pixel statistics.
+    Orchestrates the comparison of two models by loading them and their data,
+    then calling the change detection logic.
     """
     tile_id = event.get('tile_id')
     region = event.get('region')
@@ -219,171 +255,171 @@ def compare_models(event):
     if not all([tile_id, region, current_model_path, historical_model_path, pixel_data_path]):
         raise ValueError("Missing required parameters for compare-models mode.")
     
-    logger.info(f"Performing intelligent change detection for tile: {tile_id} in region: {region}")
-    logger.info(f"   Current model: {current_model_path}")
-    logger.info(f"   Historical model: {historical_model_path}")
-    logger.info(f"   Pixel data: {pixel_data_path}")
+    logger.info(f"Performing change detection for tile: {tile_id}")
     
     try:
-        # 1. Load model metadata for temporal comparison
-        current_metadata = load_model_metadata(current_model_path)
-        historical_metadata = load_model_metadata(historical_model_path)
-        
-        # 2. Load current pixel data for statistical analysis
         pixel_statistics = load_pixel_statistics(pixel_data_path)
-        
-        # 3. Perform intelligent change detection
+        if not pixel_statistics.get("data_available"):
+            raise ValueError("Pixel data could not be loaded.")
+
         change_metrics = detect_vegetation_changes(
-            current_metadata, historical_metadata, pixel_statistics, tile_id
+            current_model_path, historical_model_path, pixel_statistics, tile_id
         )
         
-        logger.info(f"✅ Change detection completed for {tile_id} in region {region}")
+        logger.info(f"✅ Change detection completed for {tile_id}")
         
         return {
             "status": "completed",
-            "message": "Intelligent cluster-based change detection completed",
+            "message": "Cluster-based change detection completed",
             "tile_id": tile_id,
             "region": region,
-            "current_model": current_model_path,
-            "historical_model": historical_model_path,
-            "temporal_span_days": change_metrics.get('temporal_span_days', 0),
             "change_detection": change_metrics
         }
         
     except Exception as e:
-        logger.error(f"❌ Change detection failed for {tile_id} in region {region}: {str(e)}")
-        
-        # Fallback to basic comparison
-        return {
-            "status": "basic_comparison",
-            "message": f"Advanced change detection failed, using basic comparison: {str(e)}",
-            "tile_id": tile_id,
-            "region": region,
-            "current_model": current_model_path,
-            "historical_model": historical_model_path,
-            "change_detection": {
-                "pixels_changed_clusters": 0,
-                "forest_to_degraded": 0,
-                "degraded_to_deforested": 0,
-                "confidence_score": 0.0,
-                "analysis_method": "fallback"
-            }
-        }
+        logger.error(f"Change detection failed for {tile_id}: {str(e)}")
+        return { "status": "failed", "error": str(e) }
 
-def load_model_metadata(model_path):
-    """Load model metadata from S3 path"""
-    try:
-        # Extract metadata path from model path
-        # e.g., s3://bucket/sagemaker-models/S2A/20250623-164216/model.tar.gz 
-        # ->   s3://bucket/sagemaker-models/S2A/20250623-164216/metadata.json
-        metadata_path = model_path.replace('model.tar.gz', 'metadata.json')
-        bucket_name = metadata_path.split('/')[2]
-        key = '/'.join(metadata_path.split('/')[3:])
-        
-        metadata_obj = s3.get_object(Bucket=bucket_name, Key=key)
-        metadata = json.loads(metadata_obj['Body'].read().decode('utf-8'))
-        
-        return metadata
-        
-    except Exception as e:
-        logger.warning(f"⚠️ Could not load metadata from {model_path}: {str(e)}")
+def _classify_cluster_centroids(model):
+    """
+    Classifies cluster centroids based on their average NDVI value.
+    Returns a mapping from cluster index to a semantic label.
+    """
+    centroids = model.cluster_centers_
+    # The first feature is NDVI. Create a list of (cluster_index, ndvi_value).
+    ndvi_values = [(i, centroid[0]) for i, centroid in enumerate(centroids)]
+    
+    # Sort clusters by NDVI value in descending order (highest NDVI first)
+    sorted_clusters = sorted(ndvi_values, key=lambda item: item[1], reverse=True)
+    
+    classifications = {}
+    if not sorted_clusters:
         return {}
+    
+    # Handle single-cluster case
+    if len(sorted_clusters) == 1:
+        if sorted_clusters[0][1] > 0.6:
+            classifications[sorted_clusters[0][0]] = 'dense_forest'
+        elif sorted_clusters[0][1] < 0.3:
+            classifications[sorted_clusters[0][0]] = 'deforested'
+        else:
+            classifications[sorted_clusters[0][0]] = 'degraded_vegetation'
+        return classifications
+
+    # Assign 'dense_forest' to the cluster with the highest NDVI
+    classifications[sorted_clusters[0][0]] = 'dense_forest'
+    
+    # Assign 'deforested' to the cluster with the lowest NDVI
+    classifications[sorted_clusters[-1][0]] = 'deforested'
+    
+    # Assign 'degraded_vegetation' to all other clusters in between
+    for i in range(1, len(sorted_clusters) - 1):
+        classifications[sorted_clusters[i][0]] = 'degraded_vegetation'
+        
+    logger.info(f"Centroid classifications: {classifications}")
+    return classifications
+
+def detect_vegetation_changes(current_model_path, historical_model_path, pixel_statistics, tile_id):
+    """
+    Performs a genuine change detection by classifying clusters based on NDVI centroids
+    and comparing their assignments for each pixel.
+    """
+    
+    # 1. Load the actual model objects from S3
+    current_model = _load_model_from_s3(current_model_path)
+    historical_model = _load_model_from_s3(historical_model_path)
+
+    # 2. Classify centroids for both models to understand what each cluster means
+    current_class_map = _classify_cluster_centroids(current_model)
+    historical_class_map = _classify_cluster_centroids(historical_model)
+    
+    # 3. Get the pixel data to run predictions on, converting to a NumPy array
+    pixels_to_predict = np.array([p[:3] for p in pixel_statistics["pixels"]])
+    
+    if not pixels_to_predict.any():
+        logger.warning("No pixels available to predict for change detection.")
+        return {"pixels_changed_clusters": 0, "analysis_method": "change_detection_no_data"}
+
+    # 4. Run predictions with both models
+    current_labels = current_model.predict(pixels_to_predict)
+    historical_labels = historical_model.predict(pixels_to_predict)
+    
+    # 5. Tally the changes based on semantic classification
+    transitions = {
+        "forest_to_degraded": 0, "forest_to_deforested": 0, "degraded_to_deforested": 0,
+        "degraded_to_forest": 0, "deforested_to_degraded": 0, "deforested_to_forest": 0,
+    }
+    changed_pixels = 0
+
+    for i in range(len(current_labels)):
+        hist_class = historical_class_map.get(historical_labels[i])
+        curr_class = current_class_map.get(current_labels[i])
+
+        if hist_class != curr_class:
+            changed_pixels += 1
+            transition_key = f"{hist_class}_to_{curr_class}"
+            if transition_key in transitions:
+                transitions[transition_key] += 1
+
+    total_pixels = len(current_labels)
+    change_percentage = (changed_pixels / total_pixels) * 100 if total_pixels > 0 else 0
+    
+    logger.info(f"🔎 Change Detection Complete. {changed_pixels}/{total_pixels} pixels changed semantic class ({change_percentage:.2f}%).")
+    logger.info(f"   Transitions: {transitions}")
+    
+    return {
+        "pixels_changed_clusters": changed_pixels,
+        "change_percentage": change_percentage,
+        "forest_to_degraded": transitions['forest_to_degraded'],
+        "degraded_to_deforested": transitions['degraded_to_deforested'],
+        "forest_to_deforested": transitions['forest_to_deforested'],
+        "new_growth_pixels": transitions['degraded_to_forest'] + transitions['deforested_to_degraded'] + transitions['deforested_to_forest'],
+        "confidence_score": min(change_percentage / 10, 1.0),
+        "analysis_method": "change_detection_with_centroid_classification"
+    }
 
 def load_pixel_statistics(pixel_data_path):
-    """Load basic pixel statistics from S3 training data"""
+    """Load pixel data from S3 and calculate basic statistics."""
     try:
         bucket_name = pixel_data_path.split('/')[2]
         key = '/'.join(pixel_data_path.split('/')[3:])
         
-        # For now, we'll derive statistics from the path structure
-        # In a full implementation, we'd load and analyze the actual pixel data
+        logger.info(f"Downloading pixel data from s3://{bucket_name}/{key}")
         
-        return {
+        response = s3.get_object(Bucket=bucket_name, Key=key)
+        pixel_data = json.loads(response['Body'].read().decode('utf-8'))
+        
+        if not pixel_data or 'pixels' not in pixel_data:
+            logger.warning("Pixel data is empty or does not contain a 'pixels' key.")
+            return {"data_available": False, "pixel_count": 0}
+            
+        pixels = pixel_data['pixels']
+        pixel_count = len(pixels)
+        
+        if pixel_count == 0:
+            return {"data_available": True, "pixel_count": 0, "pixels": []}
+
+        # Extract coordinates to calculate bounding box
+        longitudes = [p[4] for p in pixels]
+        latitudes = [p[3] for p in pixels]
+
+        stats = {
             "data_available": True,
-            "source_path": pixel_data_path,
-            "analysis_method": "metadata_based"
+            "pixel_count": pixel_count,
+            "bounding_box": {
+                "min_lat": min(latitudes),
+                "max_lat": max(latitudes),
+                "min_lon": min(longitudes),
+                "max_lon": max(longitudes),
+            },
+            "pixels": pixels # Return the pixel data for further processing
         }
+        logger.info(f"Successfully loaded {pixel_count} pixels.")
+        return stats
         
     except Exception as e:
-        logger.warning(f"⚠️ Could not load pixel data from {pixel_data_path}: {str(e)}")
-        return {"data_available": False}
-
-def detect_vegetation_changes(current_metadata, historical_metadata, pixel_statistics, tile_id):
-    """
-    Intelligent vegetation change detection using model metadata
-    """
-    
-    # Calculate temporal span
-    temporal_span_days = 0
-    if current_metadata.get('creation_timestamp_utc') and historical_metadata.get('creation_timestamp_utc'):
-        try:
-            from datetime import datetime
-            current_time = datetime.fromisoformat(current_metadata['creation_timestamp_utc'].replace('Z', '+00:00'))
-            historical_time = datetime.fromisoformat(historical_metadata['creation_timestamp_utc'].replace('Z', '+00:00'))
-            temporal_span_days = (current_time - historical_time).days
-        except Exception:
-            temporal_span_days = 0
-    
-    # Analyze model characteristics for change indicators
-    change_indicators = []
-    risk_score = 0.0
-    
-    # 1. Check for different source images (spatial change)
-    current_source = current_metadata.get('source_image_id', '')
-    historical_source = historical_metadata.get('source_image_id', '')
-    
-    if current_source != historical_source:
-        change_indicators.append("Different source imagery detected")
-        risk_score += 0.3
-    
-    # 2. Check temporal span for seasonal vs long-term changes
-    if temporal_span_days > 365:
-        change_indicators.append(f"Long-term comparison: {temporal_span_days} days")
-        risk_score += 0.2
-    elif temporal_span_days > 90:
-        change_indicators.append(f"Seasonal comparison: {temporal_span_days} days")
-        risk_score += 0.1
-    
-    # 3. Analyze training data paths for pattern changes
-    current_data_path = current_metadata.get('training_data_s3_path', '')
-    historical_data_path = historical_metadata.get('training_data_s3_path', '')
-    
-    if current_data_path != historical_data_path:
-        change_indicators.append("Different training datasets")
-        risk_score += 0.2
-    
-    # 4. Check for hyperparameter differences (model architecture changes)
-    current_params = current_metadata.get('hyperparameters', {})
-    historical_params = historical_metadata.get('hyperparameters', {})
-    
-    if current_params != historical_params:
-        change_indicators.append("Model hyperparameters changed")
-        risk_score += 0.1
-    
-    # Determine change classification based on risk score and indicators
-    if risk_score >= 0.5:
-        pixels_changed = int(risk_score * 1000)  # Simulated change count
-        forest_to_degraded = int(pixels_changed * 0.6)
-        degraded_to_deforested = int(pixels_changed * 0.3)
-    elif risk_score >= 0.2:
-        pixels_changed = int(risk_score * 500)
-        forest_to_degraded = int(pixels_changed * 0.4)
-        degraded_to_deforested = int(pixels_changed * 0.1)
-    else:
-        pixels_changed = forest_to_degraded = degraded_to_deforested = 0
-    
-    logger.info(f"🧠 Change detection for {tile_id}: Risk={risk_score:.2f}, Changes={pixels_changed}")
-    
-    return {
-        "pixels_changed_clusters": pixels_changed,
-        "forest_to_degraded": forest_to_degraded,
-        "degraded_to_deforested": degraded_to_deforested,
-        "confidence_score": min(risk_score * 2, 1.0),  # Scale to 0-1
-        "temporal_span_days": temporal_span_days,
-        "change_indicators": change_indicators,
-        "analysis_method": "metadata_intelligence",
-        "risk_score": risk_score
-    }
+        logger.error(f"❌ Could not load pixel data from {pixel_data_path}: {str(e)}")
+        return {"data_available": False, "pixel_count": 0}
 
 def track_model_performance(event):
     """

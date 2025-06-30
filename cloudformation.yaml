@@ -355,18 +355,15 @@ Resources:
   ModelManagerFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: forestshield-model-manager
-      Runtime: python3.9
-      Handler: handler.lambda_handler
+      FunctionName: !Sub 'forestshield-model-manager-${Environment}'
+      PackageType: Image
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
-        S3Bucket: !Sub 'forestshield-lambda-deployments-${AWS::AccountId}'
-        S3Key: model-manager-deployment.zip
-      Timeout: 60
-      MemorySize: 512
+        ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/forestshield/model-manager:latest'
+      Timeout: 120
+      MemorySize: 1024
       Environment:
         Variables:
-          MODELS_BUCKET: !If [CreateModelsBucket, !Sub 'forestshield-models-${AWS::AccountId}', !Ref ModelsBucketName]
           PROCESSED_DATA_BUCKET: !If [CreateProcessedDataBucket, !Sub 'forestshield-processed-data-${AWS::AccountId}', !Ref ProcessedDataBucketName]
       Tags:
         - Key: Project
@@ -480,10 +477,10 @@ Resources:
                 "startDate.$": "$.startDate",
                 "endDate.$": "$.endDate",
                 "cloudCover.$": "$.cloudCover",
-                "limit": 1
+                "limit.$": "$.limit"
                 }
               },
-              "OutputPath": "$.Payload",
+              "ResultPath": "$.searchResults",
               "Retry": [
                 {
                   "ErrorEquals": ["States.TaskFailed"],
@@ -499,7 +496,7 @@ Resources:
               "Comment": "Check if any images were found",
               "Choices": [
                 {
-                  "Variable": "$.count",
+                  "Variable": "$.searchResults.Payload.count",
                   "NumericGreaterThan": 0,
                   "Next": "ProcessImagesParallel"
                 }
@@ -518,8 +515,12 @@ Resources:
             "ProcessImagesParallel": {
               "Type": "Map",
               "Comment": "Process each image in parallel",
-              "ItemsPath": "$.images",
+              "ItemsPath": "$.searchResults.Payload.images",
               "MaxConcurrency": 5,
+              "Parameters": {
+                "image.$": "$$.Map.Item.Value",
+                "context.$": "$$.Execution.Input"
+              },
               "Iterator": {
                 "StartAt": "CalculateNDVI",
                 "States": {
@@ -528,11 +529,12 @@ Resources:
                     "Resource": "${VegetationAnalyzerFunction.Arn}",
                     "Comment": "Calculate NDVI from Red and NIR bands",
                     "Parameters": {
-                      "imageId.$": "$.id",
-                      "redBandUrl.$": "$.assets.B04",
-                      "nirBandUrl.$": "$.assets.B08",
+                      "imageId.$": "$.image.id",
+                      "redBandUrl.$": "$.image.assets.B04",
+                      "nirBandUrl.$": "$.image.assets.B08",
                       "outputBucket": "forestshield-processed-data-${AWS::AccountId}"
                     },
+                    "ResultPath": "$.ndvi_result",
                     "Retry": [
                       {
                         "ErrorEquals": ["States.TaskFailed"],
@@ -548,7 +550,7 @@ Resources:
                     "Comment": "Check if NDVI calculation succeeded",
                     "Choices": [
                       {
-                        "Variable": "$.success",
+                        "Variable": "$.ndvi_result.success",
                         "BooleanEquals": true,
                         "Next": "CheckExistingModel"
                       }
@@ -561,8 +563,11 @@ Resources:
                     "Comment": "Check if existing model exists for this region/tile",
                     "Parameters": {
                       "mode": "get-latest-model",
-                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
-                      "region.$": "$.region"
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.ndvi_result.imageId, '_'), 0)",
+                      "region": {
+                        "latitude.$": "$.context.latitude",
+                        "longitude.$": "$.context.longitude"
+                       }
                     },
                     "ResultPath": "$.existing_model",
                     "Retry": [
@@ -593,10 +598,13 @@ Resources:
                     "Comment": "Dynamic K selection - Run multiple SageMaker jobs to find optimal K",
                     "Parameters": {
                       "mode": "select-optimal-k",
-                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
-                      "training_data_path.$": "$.sagemaker_training_data",
-                      "image_id.$": "$.imageId",
-                      "region.$": "$.region"
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.ndvi_result.imageId, '_'), 0)",
+                      "training_data_path.$": "$.ndvi_result.sagemaker_training_data",
+                      "image_id.$": "$.ndvi_result.imageId",
+                      "region": {
+                        "latitude.$": "$.context.latitude",
+                        "longitude.$": "$.context.longitude"
+                      }
                     },
                     "ResultPath": "$.k_selection_result",
                     "Retry": [
@@ -623,13 +631,14 @@ Resources:
                     "Comment": "Generate visualizations using existing model",
                     "Parameters": {
                       "mode": "generate-cluster-plots",
-                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
-                      "pixel_data_path.$": "$.sagemaker_training_data",
+                      "regionId.$": "$.context.regionId",
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.ndvi_result.imageId, '_'), 0)",
+                      "pixel_data_path.$": "$.ndvi_result.sagemaker_training_data",
                       "sagemaker_results_path.$": "$.existing_model.metadata.model_s3_path",
                       "model_metadata": {
                         "model_reused": true,
                         "existing_model.$": "$.existing_model",
-                        "image_id.$": "$.imageId",
+                        "image_id.$": "$.ndvi_result.imageId",
                         "timestamp.$": "$$.State.EnteredTime"
                       }
                     },
@@ -655,15 +664,18 @@ Resources:
                     "Type": "Pass",
                     "Comment": "Existing model processing completed - handles both success and failure cases",
                     "Parameters": {
-                      "imageId.$": "$.imageId",
-                      "statistics.$": "$.statistics", 
-                      "ndvi_output.$": "$.ndvi_output",
-                      "sagemaker_training_data.$": "$.sagemaker_training_data",
+                      "imageId.$": "$.ndvi_result.imageId",
+                      "statistics.$": "$.ndvi_result.statistics", 
+                      "ndvi_output.$": "$.ndvi_result.ndvi_output",
+                      "sagemaker_training_data.$": "$.ndvi_result.sagemaker_training_data",
                       "existing_model.$": "$.existing_model",
                       "visualizations.$": "$.visualizations",
                       "model_reused": true,
-                      "processing_time_ms.$": "$.processing_time_ms",
-                      "region.$": "$.region",
+                      "processing_time_ms.$": "$.ndvi_result.processing_time_ms",
+                      "region": {
+                        "latitude.$": "$.context.latitude",
+                        "longitude.$": "$.context.longitude"
+                      },
                       "status": "COMPLETED_WITH_MODEL_REUSE",
                       "analysis_complete": true
                     },
@@ -683,7 +695,7 @@ Resources:
                     "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
                     "Comment": "Start SageMaker K-means clustering and wait for completion",
                     "Parameters": {
-                      "TrainingJobName.$": "States.Format('kmeans-{}-{}-{}', States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0), States.ArrayGetItem(States.StringSplit($.imageId, '_'), 2), States.UUID())",
+                      "TrainingJobName.$": "States.Format('kmeans-{}-{}-{}', States.ArrayGetItem(States.StringSplit($.ndvi_result.imageId, '_'), 0), States.ArrayGetItem(States.StringSplit($.ndvi_result.imageId, '_'), 2), States.UUID())",
                       "AlgorithmSpecification": {
                         "TrainingImage": "174872318107.dkr.ecr.us-west-2.amazonaws.com/kmeans:1",
                         "TrainingInputMode": "File"
@@ -694,7 +706,7 @@ Resources:
                           "DataSource": {
                             "S3DataSource": {
                               "S3DataType": "S3Prefix",
-                              "S3Uri.$": "$.sagemaker_training_data",
+                              "S3Uri.$": "$.ndvi_result.sagemaker_training_data",
                               "S3DataDistributionType": "FullyReplicated"
                             }
                           },
@@ -748,12 +760,15 @@ Resources:
                     "Comment": "Save newly trained model for future reuse",
                     "Parameters": {
                       "mode": "save-new-model",
-                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
-                      "region.$": "$.region",
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.ndvi_result.imageId, '_'), 0)",
+                      "region": {
+                        "latitude.$": "$.context.latitude",
+                        "longitude.$": "$.context.longitude"
+                      },
                       "sagemaker_output_path.$": "$.sagemaker_result.ModelArtifacts.S3ModelArtifacts",
                       "training_job_name.$": "$.sagemaker_result.TrainingJobName",
-                      "source_image_id.$": "$.imageId",
-                      "training_data_path.$": "$.sagemaker_training_data"
+                      "source_image_id.$": "$.ndvi_result.imageId",
+                      "training_data_path.$": "$.ndvi_result.sagemaker_training_data"
                     },
                     "ResultPath": "$.model_saved",
                     "Retry": [
@@ -781,12 +796,13 @@ Resources:
                     "Comment": "Generate K-means clustering visualizations and save to S3",
                     "Parameters": {
                       "mode": "generate-cluster-plots",
-                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",
-                      "pixel_data_path.$": "$.sagemaker_training_data",
+                      "regionId.$": "$.context.regionId",
+                      "tile_id.$": "States.ArrayGetItem(States.StringSplit($.ndvi_result.imageId, '_'), 0)",
+                      "pixel_data_path.$": "$.ndvi_result.sagemaker_training_data",
                       "sagemaker_results_path.$": "$.sagemaker_result.ModelArtifacts.S3ModelArtifacts",
                       "model_metadata": {
                         "training_job_name.$": "$.sagemaker_result.TrainingJobName",
-                        "image_id.$": "$.imageId",
+                        "image_id.$": "$.ndvi_result.imageId",
                         "timestamp.$": "$$.State.EnteredTime"
                       }
                     },
@@ -812,16 +828,19 @@ Resources:
                     "Type": "Pass",
                     "Comment": "Image processing completed successfully - NDVI calculated, SageMaker clustering done, model saved, and visualizations generated",
                     "Parameters": {
-                      "imageId.$": "$.imageId",
-                      "statistics.$": "$.statistics", 
-                      "ndvi_output.$": "$.ndvi_output",
-                      "sagemaker_training_data.$": "$.sagemaker_training_data",
+                      "imageId.$": "$.ndvi_result.imageId",
+                      "statistics.$": "$.ndvi_result.statistics", 
+                      "ndvi_output.$": "$.ndvi_result.ndvi_output",
+                      "sagemaker_training_data.$": "$.ndvi_result.sagemaker_training_data",
                       "sagemaker_result.$": "$.sagemaker_result",
                       "model_saved.$": "$.model_saved",
                       "visualizations.$": "$.visualizations",
                       "model_reused": false,
-                      "processing_time_ms.$": "$.processing_time_ms",
-                      "region.$": "$.region",
+                      "processing_time_ms.$": "$.ndvi_result.processing_time_ms",
+                      "region": {
+                        "latitude.$": "$.context.latitude",
+                        "longitude.$": "$.context.longitude"
+                      },
                       "status": "COMPLETED",
                       "analysis_complete": true
                     },
