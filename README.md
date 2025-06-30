@@ -266,5 +266,6 @@ Methods applied based on research:
 
 - [Detecting deforestation in the Amazon rainforest using unsupervised K-means clustering on satellite imagery](./https://developers.arcgis.com/python/latest/samples/detecting-deforestation-using-kmeans-clustering-on-sentinel-imagery/)
 - [Md Jelas I, Zulkifley MA, Abdullah M and Spraggon M (2024) Deforestation detection using deep learning-based semantic segmentation techniques: a systematic review. Front. For. Glob. Change 7:1300060. doi: 10.3389/ffgc.2024.1300060](./https://www.frontiersin.org/journals/forests-and-global-change/articles/10.3389/ffgc.2024.1300060/full)
+- [aws-smsl-geospatial-analysis-deforestation](https://github.com/aws-samples/aws-smsl-geospatial-analysis-deforestation/)
 
 ---
