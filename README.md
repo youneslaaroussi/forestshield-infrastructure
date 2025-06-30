@@ -260,5 +260,3 @@ Methods applied based on research:
 - [Md Jelas I, Zulkifley MA, Abdullah M and Spraggon M (2024) Deforestation detection using deep learning-based semantic segmentation techniques: a systematic review. Front. For. Glob. Change 7:1300060. doi: 10.3389/ffgc.2024.1300060](./https://www.frontiersin.org/journals/forests-and-global-change/articles/10.3389/ffgc.2024.1300060/full)
 
 ---
-
-**🌍 Help protect our forests with ForestShield!** 
