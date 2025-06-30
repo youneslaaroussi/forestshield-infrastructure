@@ -155,7 +155,7 @@ For complete API documentation see [DOCS.md](./DOCS.md).
 
 ForestShield represents a **state-of-the-art serverless architecture** that leverages the full power of AWS managed services to create an intelligent, scalable, and cost-effective deforestation monitoring system. The platform demonstrates advanced cloud-native design patterns and scientific computing at scale.
 
-![Pipeline](./assets/elbow_method.png)
+![Pipeline](./assets/overall_arch.png)
 
 ### 🎯 **Core Architectural Principles**
 
