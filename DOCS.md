@@ -25,6 +25,20 @@
 5.  [**Data Models & Schemas**](#5-data-models--schemas)
     5.1. [S3 Data Lake Object Schemas](#51-s3-data-lake-object-schemas)
     5.2. [DynamoDB Table Schemas](#52-dynamodb-table-schemas)
+6.  [**Data Visualization & Alert System Deep Dive**](#6-data-visualization--alert-system-deep-dive)
+    6.1. [Heatmap System Architecture](#61-heatmap-system-architecture)
+    6.2. [Alert System Architecture & Generation Logic](#62-alert-system-architecture--generation-logic)
+7.  [**Complete Analysis Workflow (Step Functions Deep Dive)**](#7-complete-analysis-workflow-step-functions-deep-dive)
+    7.1. [DeforestationDetectionWorkflow State Machine](#71-deforestationdetectionworkflow-state-machine)
+    7.2. [Email & PDF Report Generation System](#72-email--pdf-report-generation-system)
+8.  [**NDVI Processing & Satellite Image Analysis**](#8-ndvi-processing--satellite-image-analysis)
+    8.1. [NDVI Scientific Foundation](#81-ndvi-scientific-foundation)
+    8.2. [Sentinel-2 Image Processing Pipeline](#82-sentinel-2-image-processing-pipeline)
+    8.3. [K-means Feature Engineering](#83-k-means-feature-engineering)
+9.  [**Complete End-to-End Workflow Example**](#9-complete-end-to-end-workflow-example)
+    9.1. [Amazon Rainforest Monitoring Scenario](#91-amazon-rainforest-monitoring-scenario)
+    9.2. [Data Flow from Analysis to Visualization](#92-data-flow-from-analysis-to-visualization)
+    9.3. [API Usage Examples](#93-api-usage-examples)
 
 ---
 
@@ -265,3 +279,691 @@ This is a state-by-state analysis of the workflow's logic and data transformatio
           "acknowledged": { "BOOL": false }
         }
         ```
+
+---
+
+## **6. Data Visualization & Alert System Deep Dive**
+
+### **6.1. Heatmap System Architecture**
+
+**What are Heatmaps in ForestShield?**
+
+Heatmaps in ForestShield are geographic visualizations that display deforestation intensity across monitored regions using color gradients. They provide a visual representation of vegetation health and changes over time.
+
+**Technical Implementation:**
+- **Data Source**: Athena queries against the `geospatial_data` table stored in S3
+- **Query Engine**: AWS Athena with partition pruning for performance
+- **Geographic Format**: WGS 84 coordinate system (EPSG:4326)
+- **Data Structure**: Each heatmap point contains:
+  ```typescript
+  {
+    latitude: number,    // WGS 84 coordinate
+    longitude: number,   // WGS 84 coordinate 
+    intensity: number,   // NDVI value (-1.0 to +1.0)
+    cellSize: number     // Grid cell size in meters (default: 1000m)
+  }
+  ```
+
+**API Implementation:**
+- **Endpoint**: `GET /dashboard/heatmap`
+- **Query Parameters**: `north`, `south`, `east`, `west` (bounding box), `days` (time period)
+- **Performance**: Limited to 10,000 points per query for optimal rendering
+- **Caching**: Results cached in Redis for 1 hour
+
+**Athena Query Structure:**
+```sql
+SELECT latitude, longitude, ndvi
+FROM "forestshield_database"."geospatial_data"
+WHERE date_parse(substr(timestamp, 1, 10), '%Y-%m-%d') >= date('${startDate}')
+  AND latitude BETWEEN ${south} AND ${north}
+  AND longitude BETWEEN ${west} AND ${east}
+LIMIT 10000;
+```
+
+### **6.2. Alert System Architecture & Generation Logic**
+
+**What are Alerts?**
+
+Alerts are automated notifications triggered when the intelligent analysis system detects potential deforestation or vegetation changes in monitored regions.
+
+**Alert Levels & Thresholds:**
+- **HIGH**: `deforestationPercentage > 10%` - Significant vegetation loss detected
+- **MODERATE**: `deforestationPercentage > 5%` - Moderate vegetation loss  
+- **LOW**: `deforestationPercentage > 3%` - Minor vegetation change
+- **INFO**: Stable conditions or data reporting
+
+**Alert Generation Workflow:**
+1. **Trigger Points**: 
+   - Step Functions workflow completion
+   - Real-time region analysis via `/sentinel/analyze-region`
+   - Scheduled monitoring jobs
+
+2. **Intelligence-Based Assessment**: The system uses ML model comparison rather than simple thresholds:
+   ```python
+   def assess_deforestation_risk(statistics, processing_results):
+       # Analyze model usage patterns
+       model_analysis = analyze_model_usage(processing_results)
+       
+       # Perform cluster-based change detection  
+       change_detection = perform_cluster_change_detection(processing_results)
+       
+       # Determine risk using ML insights vs simple thresholds
+       risk_level = determine_intelligent_risk_level(
+           model_analysis, change_detection, statistics
+       )
+   ```
+
+3. **Confidence Scoring**: Each alert includes confidence metrics:
+   - **Spatial Coherence**: Geographic consistency of detected changes
+   - **Temporal Accuracy**: Time-based validation of patterns
+   - **Model Agreement**: Consensus between different ML approaches
+   - **Data Quality**: Percentage of valid satellite pixels analyzed
+
+**Alert Storage & Management:**
+- **Database**: DynamoDB table `forestshield-deforestation-alerts-db`
+- **Schema**: 
+  ```json
+  {
+    "alertId": "string",
+    "regionId": "string", 
+    "regionName": "string",
+    "level": "HIGH|MODERATE|LOW|INFO",
+    "deforestationPercentage": "number",
+    "timestamp": "ISO8601",
+    "acknowledged": "boolean"
+  }
+  ```
+- **Indexing**: Global Secondary Index on `regionId` for efficient querying
+
+**Notification Delivery:**
+- **SNS Topic**: `forestshield-deforestation-alerts`
+- **Email Format**: Professional email with PDF report attachment
+- **Dashboard**: Real-time alert management interface
+
+---
+
+## **7. Complete Analysis Workflow (Step Functions Deep Dive)**
+
+### **7.1. DeforestationDetectionWorkflow State Machine**
+
+**Workflow Purpose**: End-to-end serverless pipeline for processing satellite imagery, performing ML analysis, and generating intelligent alerts.
+
+**State-by-State Execution Flow:**
+
+#### **Phase 1: Image Discovery**
+```mermaid
+graph TD
+    A[SearchSentinelImages] --> B[CheckImagesFound]
+    B -->|count > 0| C[ProcessImagesParallel]
+    B -->|count = 0| D[NoImagesFound]
+```
+
+1. **SearchSentinelImages** (Java Lambda):
+   - Queries STAC API at `earth-search.aws.element84.com/v1/search`
+   - Filters by date range, cloud cover, and geographic bounds
+   - Optimizes request using `fields` parameter for specific assets (B04, B08)
+   - Returns structured image metadata
+
+#### **Phase 2: Parallel Image Processing**
+```mermaid
+graph TD
+    A[ProcessImagesParallel] --> B[CalculateNDVI]
+    B --> C[CheckNDVISuccess]
+    C -->|success| D[CheckExistingModel]
+    C -->|failure| E[NDVIFailed]
+    D --> F[DecideModelStrategy]
+```
+
+2. **ProcessImagesParallel** (Map State):
+   - **Concurrency**: Maximum 5 images processed simultaneously
+   - **Iterator Logic**: Each image processed through identical sub-workflow
+   - **Error Handling**: Individual image failures don't stop overall workflow
+
+3. **CalculateNDVI** (Python Lambda - `vegetation-analyzer`):
+   - **Scientific Core**: Implements `NDVI = (NIR - Red) / (NIR + Red)` formula
+   - **Real Pixel Extraction**: Generates 5D feature vectors `[NDVI, Red, NIR, Latitude, Longitude]`
+   - **Chunked Processing**: Processes 1024x1024 pixel chunks for memory efficiency
+   - **Data Output**: Creates S3-stored JSON files for SageMaker input
+
+#### **Phase 3: Machine Learning Pipeline**
+```mermaid
+graph TD
+    A[CheckExistingModel] --> B[DecideModelStrategy]
+    B -->|model exists| C[UseExistingModel]
+    B -->|no model| D[SelectOptimalK]
+    D --> E[StartSageMakerClustering]
+    E --> F[SaveNewModel]
+    F --> G[GenerateVisualizations]
+```
+
+4. **Model Intelligence System**:
+   - **Model Manager**: Checks for existing models by `tile_id` and `region`
+   - **K-Selector**: Implements Elbow Method for optimal cluster selection:
+     ```python
+     # Test K values [2,3,4,5,6] in parallel SageMaker jobs
+     sse_scores = []
+     for k in k_values:
+         job_result = sagemaker_client.create_training_job(k=k)
+         sse_scores.append(extract_sse_from_logs(job_result))
+     
+     optimal_k = find_elbow_point(sse_scores)
+     ```
+
+5. **SageMaker K-means Clustering**:
+   - **Algorithm**: `174872318107.dkr.ecr.us-west-2.amazonaws.com/kmeans:1`
+   - **Instance**: `ml.m5.large` with 10GB storage
+   - **Input Format**: 5-dimensional pixel vectors in CSV format
+   - **Sync Execution**: Step Functions waits for training completion
+
+#### **Phase 4: Results & Visualization**
+```mermaid
+graph TD
+    A[GenerateVisualizations] --> B[ConsolidateResults]
+    B --> C[SendDeforestationAlert]
+```
+
+6. **Visualization Generator** (Python Lambda):
+   - **Plot Types**: 
+     - NDVI vs Red Band scatter plots with cluster colors
+     - Geographic distribution maps
+     - Feature distribution histograms
+     - Cluster statistics and centroids
+     - NDVI vs NIR analysis
+   - **Storage**: High-resolution PNG files saved to S3
+   - **Access**: Signed URLs generated via `/dashboard/visualizations` API
+
+### **7.2. Email & PDF Report Generation System**
+
+**Results Consolidator Lambda** (`results-consolidator`):
+
+The final stage generates comprehensive PDF reports and professional email notifications using the `reportlab` library.
+
+**PDF Report Structure:**
+```python
+def generate_detailed_pdf_report():
+    # Executive Summary Table
+    summary_data = [
+        ['Alert Level', risk_level],
+        ['Confidence', f"{confidence_level} ({overall_confidence:.1%})"],
+        ['Data Quality', f"{data_quality:.1f}% valid pixels"]
+    ]
+    
+    # Vegetation Analysis Section
+    vegetation_data = [
+        ['Average Vegetation Coverage', f"{avg_coverage:.1f}%"],
+        ['NDVI Range', f"{min_ndvi:.3f} - {max_ndvi:.3f}"],
+        ['Total Pixels Analyzed', f"{total_pixels:,}"]
+    ]
+    
+    # Technical Details & Visualization Links
+    tech_details = [
+        "• Satellite Data Source: Sentinel-2",
+        "• Analysis Method: K-means clustering with 5D features",
+        "• NDVI Calculation: (NIR - Red) / (NIR + Red)",
+        "• Machine Learning: Intelligent model reuse and comparison"
+    ]
+```
+
+**Email Generation:**
+- **Subject Format**: `🚨 URGENT|⚠️ WARNING|ℹ️ INFO: {description} - ForestShield Alert`
+- **Content Structure**:
+  - Risk level and confidence summary
+  - Key vegetation metrics
+  - PDF download link (7-day expiration)
+  - Dashboard management links
+  - Unsubscribe options
+
+**S3 Storage & Access:**
+- **PDF Path**: `s3://processed-data-bucket/reports/{timestamp}/ForestShield_Report_{risk_level}_{timestamp}.pdf`
+- **Pre-signed URLs**: 7-day expiration for secure access
+- **Metadata**: Risk level, generation timestamp, system identification
+
+---
+
+## **8. NDVI Processing & Satellite Image Analysis**
+
+### **8.1. NDVI Scientific Foundation**
+
+**Mathematical Formula:**
+```
+NDVI = (NIR - Red) / (NIR + Red)
+```
+
+**Where:**
+- **NIR**: Near-Infrared reflectance (Sentinel-2 Band B08, 842nm wavelength)
+- **Red**: Red light reflectance (Sentinel-2 Band B04, 665nm wavelength)
+- **Range**: -1.0 to +1.0 (typical vegetation > 0.2)
+
+**Physical Interpretation:**
+- **High NDVI (0.6-1.0)**: Dense, healthy vegetation (high chlorophyll content)
+- **Moderate NDVI (0.2-0.6)**: Sparse vegetation or stressed plants
+- **Low NDVI (0.0-0.2)**: Bare soil, urban areas, rock surfaces
+- **Negative NDVI**: Water bodies, snow, clouds
+
+### **8.2. Sentinel-2 Image Processing Pipeline**
+
+**Image Acquisition:**
+- **Source**: Sentinel-2 Level-2A (atmospherically corrected)
+- **Access**: STAC API via `earth-search.aws.element84.com`
+- **Bands Used**: B04 (Red, 10m resolution), B08 (NIR, 10m resolution)
+- **Format**: Cloud Optimized GeoTIFF (COG) or JPEG2000
+
+**Technical Processing Chain:**
+```python
+def calculate_ndvi_from_urls(red_url, nir_url, image_id):
+    # 1. Direct cloud access via rasterio
+    with rasterio.open(red_url) as red_src:
+        with rasterio.open(nir_url) as nir_src:
+            
+            # 2. Chunked processing for memory efficiency
+            for chunk_row in range(0, height, chunk_size):
+                red_chunk = red_src.read(1, window=Window(...))
+                nir_chunk = nir_src.read(1, window=Window(...))
+                
+                # 3. NDVI calculation with safe division
+                ndvi_chunk = (nir_chunk - red_chunk) / (nir_chunk + red_chunk)
+                
+                # 4. Extract 5D pixel vectors
+                for pixel in valid_pixels:
+                    pixel_features = [
+                        ndvi_val,     # Vegetation index
+                        red_val,      # Red reflectance
+                        nir_val,      # NIR reflectance
+                        latitude,     # Geographic coordinate
+                        longitude     # Geographic coordinate  
+                    ]
+```
+
+**Spatial Coordinate Transformation:**
+```python
+# Convert pixel coordinates to geographic coordinates
+transformer = Transformer.from_crs(source_crs, "EPSG:4326")
+x, y = xy(transform, pixel_row, pixel_col)
+longitude, latitude = transformer.transform(x, y)
+```
+
+**Data Quality & Validation:**
+- **Cloud Masking**: Automatic detection and removal of cloudy pixels
+- **No-Data Handling**: Sentinel-2 uses 0 values to indicate no data
+- **Coordinate Validation**: Ensures coordinates fall within valid Earth bounds
+- **Statistical Validation**: NDVI values constrained to [-1, +1] range
+
+### **8.3. K-means Feature Engineering**
+
+**5-Dimensional Feature Space:**
+The system creates rich feature vectors combining spectral and spatial information:
+
+```python
+pixel_features = [
+    ndvi_value,      # Primary vegetation indicator
+    red_reflectance, # Soil/urban signature  
+    nir_reflectance, # Vegetation vigor
+    latitude,        # Geographic context
+    longitude        # Geographic context
+]
+```
+
+**Clustering Advantages:**
+- **Beyond Thresholds**: ML clustering captures complex land-cover patterns
+- **Spatial Awareness**: Geographic coordinates enable region-specific models
+- **Multi-spectral**: Uses full spectral signature, not just NDVI
+- **Adaptive**: Model reuse system adapts to different biomes and seasons
+
+**Performance Optimization:**
+- **Sampling Strategy**: Intelligent sampling (max 25,000 pixels per image)
+- **Chunk Processing**: 1024x1024 pixel chunks for memory management
+- **Priority Areas**: Vegetation-rich regions processed first
+- **Model Caching**: Trained models reused across similar geographic tiles
+
+---
+
+## **9. Complete End-to-End Workflow Example**
+
+This section demonstrates a complete real-world workflow showing how ForestShield processes satellite data, generates alerts, and populates heatmaps using an Amazon Rainforest monitoring scenario.
+
+### **9.1. Amazon Rainforest Monitoring Scenario**
+
+**Objective**: Monitor a 20km x 20km section of the Amazon rainforest for deforestation changes over a 15-day period.
+
+**Geographic Target**: 
+- **Center Point**: Latitude -6.0, Longitude -53.0 (Pará State, Brazil)
+- **Time Period**: January 1-15, 2024
+- **Cloud Coverage**: Maximum 20% for clear imagery
+
+#### **Step 1: Trigger Analysis via Step Functions**
+
+```bash
+curl -X POST https://api.forestshieldapp.com/sentinel/step-functions/trigger \
+-H "Content-Type: application/json" \
+-d '{
+  "searchParams": {
+    "latitude": -6.0,
+    "longitude": -53.0,
+    "startDate": "2024-01-01",
+    "endDate": "2024-01-15",
+    "cloudCover": 20
+  },
+  "maxImages": 3
+}'
+```
+
+**API Response:**
+```json
+{
+  "success": true,
+  "executionArn": "arn:aws:states:us-west-2:123456789:execution:forestshield-pipeline:amazon-analysis-20240115",
+  "message": "Step Functions workflow started"
+}
+```
+
+#### **Step 2: Automated Workflow Execution**
+
+The Step Functions workflow automatically processes through these phases:
+
+**Phase 1: Image Discovery**
+```json
+{
+  "count": 3,
+  "images": [
+    {
+      "id": "S2B_MSIL2A_20240102T140059_N0510_R110_T20LPM_20240102T181805",
+      "date": "2024-01-02T14:00:59Z",
+      "assets": {
+        "B04": "https://sentinel-s2-l2a.s3.amazonaws.com/.../B04.jp2",
+        "B08": "https://sentinel-s2-l2a.s3.amazonaws.com/.../B08.jp2"
+      },
+      "cloudCover": 8.2
+    }
+    // ... 2 additional images
+  ]
+}
+```
+
+**Phase 2: NDVI Processing & Feature Extraction**
+```python
+# For each image, the vegetation-analyzer generates:
+pixel_data_sample = [
+    # [NDVI, Red, NIR, Latitude, Longitude]
+    [0.847, 1842, 3456, -6.001234, -52.998765],  # Dense rainforest
+    [0.234, 2156, 2891, -6.002341, -52.997654],  # Degraded area
+    [0.156, 2876, 3123, -6.003456, -52.996543],  # Recently cleared
+    [0.091, 3245, 3387, -6.004567, -52.995432],  # Bare soil/roads
+    # ... up to 25,000 pixels per image
+]
+
+# Statistical summary generated:
+statistics = {
+    "mean_ndvi": 0.542,
+    "vegetation_coverage": 67.3,  # 67.3% vegetation coverage
+    "valid_pixels": 73420,
+    "total_pixels": 77500,
+    "data_quality_percentage": 94.7
+}
+```
+
+**Phase 3: K-means Clustering Analysis**
+```python
+# SageMaker identifies 4 optimal clusters:
+cluster_results = {
+    "optimal_k": 4,
+    "clusters": {
+        0: {"centroid_ndvi": 0.841, "description": "Dense rainforest", "pixels": 32150},
+        1: {"centroid_ndvi": 0.487, "description": "Secondary forest", "pixels": 18790},
+        2: {"centroid_ndvi": 0.241, "description": "Degraded vegetation", "pixels": 14230},
+        3: {"centroid_ndvi": 0.098, "description": "Deforested/bare", "pixels": 8250}
+    }
+}
+```
+
+**Phase 4: Risk Assessment & Alert Generation**
+```python
+# Intelligent analysis results:
+risk_assessment = {
+    "level": "HIGH",
+    "priority": "CHANGE_DETECTED", 
+    "description": "Significant vegetation changes detected through cluster analysis",
+    "deforestation_percentage": 12.4,  # 12.4% vegetation loss
+    "confidence_score": 0.873,
+    "action_required": "Immediate investigation of detected changes recommended"
+}
+```
+
+### **9.2. Data Flow from Analysis to Visualization**
+
+#### **S3 Data Lake Population**
+
+After analysis completion, data is stored across multiple S3 locations:
+
+```
+s3://forestshield-processed-data-381492060635/
+├── geospatial-data/
+│   ├── year=2024/month=01/day=15/
+│   │   └── amazon_analysis_pixels_20240115_140523.json
+│   └── [Athena partitioned structure]
+├── visualizations/
+│   ├── S2B/20240115_140523/
+│   │   ├── ndvi_red_clusters.png
+│   │   ├── geographic_distribution.png
+│   │   ├── feature_distributions.png
+│   │   ├── cluster_statistics.png
+│   │   └── ndvi_nir_clusters.png
+├── sagemaker-models/
+│   ├── kmeans-s2b-20240115-140523/
+│   │   ├── model.tar.gz
+│   │   └── metadata.json
+└── reports/
+    └── 20240115_140523/
+        └── ForestShield_Report_HIGH_20240115_140523.pdf
+```
+
+#### **Pixel Data Format for Heatmaps**
+
+```json
+{
+  "pixel_records": [
+    {
+      "timestamp": "2024-01-15T14:05:23Z",
+      "latitude": -6.001234,
+      "longitude": -52.998765,
+      "ndvi": 0.847,
+      "red_reflectance": 1842,
+      "nir_reflectance": 3456,
+      "cluster_id": 0,
+      "tile_id": "S2B_MSIL2A_20240102T140059",
+      "region": "amazon_rainforest",
+      "vegetation_class": "dense_forest"
+    },
+    {
+      "timestamp": "2024-01-15T14:05:23Z", 
+      "latitude": -6.003456,
+      "longitude": -52.996543,
+      "ndvi": 0.156,
+      "red_reflectance": 2876,
+      "nir_reflectance": 3123,
+      "cluster_id": 2,
+      "tile_id": "S2B_MSIL2A_20240102T140059",
+      "region": "amazon_rainforest", 
+      "vegetation_class": "deforested"
+    }
+    // ... thousands more pixel records
+  ]
+}
+```
+
+#### **Alert Creation & Notification**
+
+**DynamoDB Alert Record:**
+```json
+{
+  "alertId": "alert-f8e7d6c5-b4a3-2109-8765-4321fedcba98",
+  "regionId": "amazon-sector-a",
+  "regionName": "Amazon Rainforest - Sector A", 
+  "level": "HIGH",
+  "deforestationPercentage": 12.4,
+  "message": "🚨 HIGH DEFORESTATION: 12.4% vegetation loss detected in Amazon Rainforest - Sector A",
+  "timestamp": "2024-01-15T14:08:45Z",
+  "acknowledged": false
+}
+```
+
+**Professional Email Alert:**
+```
+Subject: 🚨 URGENT: Significant vegetation changes detected through cluster analysis - ForestShield Alert
+
+🛡️ ForestShield Forest Monitoring Alert
+
+🎯 ALERT LEVEL: HIGH
+🔍 STATUS: Significant vegetation changes detected through cluster analysis
+🎯 CONFIDENCE: HIGH (87.3%)
+
+📊 QUICK SUMMARY:
+• Images Analyzed: 3/3
+• Average Vegetation Coverage: 67.3%
+• Average NDVI: 0.542
+• Data Quality: 94.7% valid pixels
+
+💡 RECOMMENDED ACTION: Immediate investigation of detected changes recommended
+
+📄 DETAILED ANALYSIS:
+A comprehensive PDF report with complete analysis details is available:
+📥 Download Report: https://s3-presigned-url.../ForestShield_Report_HIGH_20240115.pdf
+⏰ Link expires: 7 days from analysis
+
+📧 MANAGE ALERTS:
+• Dashboard: https://api.forestshieldapp.com/dashboard/alerts
+• Unsubscribe: https://api.forestshieldapp.com/dashboard/alerts/unsubscribe
+```
+
+### **9.3. API Usage Examples**
+
+#### **Accessing Heatmap Data**
+
+After analysis completion, retrieve heatmap visualization data:
+
+```bash
+# Get heatmap data for the analyzed Amazon region
+curl "https://api.forestshieldapp.com/dashboard/heatmap?north=-5.9&south=-6.1&east=-52.9&west=-53.1&days=30" \
+-H "Accept: application/json"
+```
+
+**Heatmap API Response:**
+```json
+{
+  "data": [
+    {
+      "lat": -6.001234,
+      "lng": -52.998765,
+      "intensity": 0.847,    // High NDVI = dense forest (dark green on heatmap)
+      "cellSize": 1000
+    },
+    {
+      "lat": -6.002341,
+      "lng": -52.997654, 
+      "intensity": 0.487,    // Moderate NDVI = secondary forest (light green)
+      "cellSize": 1000
+    },
+    {
+      "lat": -6.003456,
+      "lng": -52.996543,
+      "intensity": 0.156,    // Low NDVI = deforested area (red on heatmap)
+      "cellSize": 1000
+    },
+    {
+      "lat": -6.004567,
+      "lng": -52.995432,
+      "intensity": 0.091,    // Very low NDVI = bare soil (dark red)
+      "cellSize": 1000
+    }
+    // ... up to 10,000 points for optimal map rendering
+  ],
+  "bounds": {
+    "north": -5.9,
+    "south": -6.1,
+    "east": -52.9, 
+    "west": -53.1
+  },
+  "generatedAt": "2024-01-15T14:15:23Z",
+  "periodDays": 30
+}
+```
+
+#### **Retrieving Generated Visualizations**
+
+Access the K-means clustering visualizations:
+
+```bash
+# Get NDVI vs Red band scatter plot with cluster colors
+curl "https://api.forestshieldapp.com/dashboard/visualizations/S2B/20240115_140523/ndvi_red_clusters" \
+-H "Accept: application/json"
+```
+
+**Visualization API Response:**
+```json
+{
+  "signedUrl": "https://forestshield-processed-data.s3.amazonaws.com/visualizations/S2B/20240115_140523/ndvi_red_clusters.png?X-Amz-Signature=...",
+  "tileId": "S2B",
+  "chartType": "ndvi_red_clusters",
+  "timestamp": "20240115_140523", 
+  "expiresAt": "2024-01-22T14:15:23Z",
+  "description": "NDVI vs Red Band K-means Clustering"
+}
+```
+
+**Available Visualization Types:**
+- `ndvi_red_clusters` - NDVI vs Red band scatter plot with cluster colors
+- `geographic_distribution` - Geographic distribution of pixel clusters  
+- `feature_distributions` - Histogram distributions of NDVI, Red, NIR values
+- `cluster_statistics` - Cluster sizes, means, and statistical analysis
+- `ndvi_nir_clusters` - NDVI vs NIR band relationship analysis
+
+#### **Managing Alerts via Dashboard**
+
+```bash
+# Get all recent alerts
+curl "https://api.forestshieldapp.com/dashboard/alerts?limit=10" \
+-H "Accept: application/json"
+
+# Get high-priority alerts only
+curl "https://api.forestshieldapp.com/dashboard/alerts?level=HIGH&acknowledged=false" \
+-H "Accept: application/json"
+
+# Acknowledge an alert
+curl -X PUT "https://api.forestshieldapp.com/dashboard/alerts/alert-f8e7d6c5/acknowledge" \
+-H "Content-Type: application/json"
+```
+
+#### **Complete Data Flow Diagram**
+
+```mermaid
+graph TD
+    A[API Trigger: /sentinel/step-functions/trigger] --> B[Step Functions: DeforestationDetectionWorkflow]
+    B --> C[SearchSentinelImages Lambda]
+    C --> D[ProcessImagesParallel Map State]
+    D --> E[VegetationAnalyzer: NDVI + 5D Features]
+    E --> F[SageMaker: K-means Clustering]
+    F --> G[VisualizationGenerator: Chart Creation]
+    G --> H[ResultsConsolidator: Risk Assessment]
+    H --> I[SNS: Professional Email Alert]
+    H --> J[PDF Report Generation]
+    E --> K[S3: Pixel Data Storage]
+    K --> L[Athena: Table Population]
+    L --> M[API: /dashboard/heatmap]
+    G --> N[API: /dashboard/visualizations]
+    H --> O[DynamoDB: Alert Storage]
+    O --> P[API: /dashboard/alerts]
+    
+    style A fill:#e1f5fe
+    style M fill:#c8e6c9
+    style N fill:#c8e6c9
+    style P fill:#c8e6c9
+    style I fill:#ffcdd2
+    style J fill:#fff3e0
+```
+
+**Key Performance Metrics from Example:**
+- **Processing Time**: ~8-12 minutes for 3 images (including SageMaker training)
+- **Data Volume**: 73,420 analyzed pixels generating ~15MB of feature data
+- **Visualization**: 5 high-resolution charts generated automatically
+- **Alert Latency**: < 30 seconds from workflow completion to email delivery
+- **Heatmap Availability**: Immediate via Athena queries post-processing
+- **Report Generation**: Professional PDF with 4-6 pages of detailed analysis

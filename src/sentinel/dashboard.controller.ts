@@ -437,14 +437,23 @@ export class DashboardController {
               'ndvi_nir_clusters': 'NDVI vs NIR Band K-means Clustering'
             };
 
-            visualizations.push({
-              chartType,
-              tileId,
-              timestamp,
-              url: `https://${bucketName}.s3.amazonaws.com/${obj.Key}`,
-              createdAt: obj.LastModified?.toISOString() || new Date().toISOString(),
-              description: chartDescriptions[chartType] || `${chartType} visualization`
-            });
+            try {
+              // Generate signed URL for each visualization (expires in 1 hour by default)
+              const signedUrl = await this.awsService.generateS3SignedUrl(bucketName, obj.Key, 3600);
+              
+              visualizations.push({
+                chartType,
+                tileId,
+                timestamp,
+                url: signedUrl,
+                createdAt: obj.LastModified?.toISOString() || new Date().toISOString(),
+                description: chartDescriptions[chartType] || `${chartType} visualization`
+              });
+            } catch (error) {
+              this.logger.warn(`Failed to generate signed URL for visualization ${obj.Key}: ${error.message}`);
+              // Skip this visualization if we can't generate a signed URL
+              continue;
+            }
           }
         }
       }
