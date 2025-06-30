@@ -90,7 +90,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         ndvi_output_path, sagemaker_training_path = s3_handler.upload_ndvi_result(
             image_id=image_id,
             statistics=ndvi_result['statistics'],
-            pixel_data=ndvi_result.get('pixel_data', [])  # PHASE 1: Pass real pixel data
+            pixel_data=ndvi_result.get('pixel_data', [])  # Pass real pixel data
         )
         
         # Calculate processing time
@@ -103,13 +103,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'success': True,
                 'imageId': image_id,
                 'statistics': ndvi_result['statistics'],
-                'pixel_data': ndvi_result.get('pixel_data', []),  # PHASE 1: Include real pixel data
-                'spatial_metadata': ndvi_result.get('spatial_metadata', {}),  # PHASE 1: Include spatial info
+                'pixel_data': ndvi_result.get('pixel_data', []),  # Include real pixel data
+                'spatial_metadata': ndvi_result.get('spatial_metadata', {}),  # Include spatial info
                 'ndvi_output': ndvi_output_path,
                 'sagemaker_training_data': sagemaker_training_path,
                 'processing_time_ms': processing_time_ms,
                 'region': region,
-                'phase': 'Phase 2: SageMaker-Only ML Processing'  # Track implementation phase
             }
         else:
             # Step Functions has 256KB limit - exclude large pixel data array
@@ -124,7 +123,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'sagemaker_training_data': sagemaker_training_path,
                 'processing_time_ms': processing_time_ms,
                 'region': region,
-                'phase': 'Phase 2: SageMaker-Only ML Processing'  # Track implementation phase
             }
         
         logger.info(f"✅ Vegetation analysis completed in {processing_time_ms}ms")

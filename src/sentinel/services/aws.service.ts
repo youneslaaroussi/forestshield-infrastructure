@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { S3Client, PutObjectCommand, GetObjectCommand, GetObjectCommandInput } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, GetObjectCommandInput, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SageMakerClient, CreateProcessingJobCommand, DescribeProcessingJobCommand } from '@aws-sdk/client-sagemaker';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
@@ -70,6 +70,44 @@ export class AWSService {
     this.logger.log(`Generated signed URL expires in ${expiresIn} seconds`);
     
     return signedUrl;
+  }
+
+  async listS3Objects(params: { Bucket: string; Prefix?: string; MaxKeys?: number }): Promise<any[]> {
+    this.logger.log(`Listing S3 objects in bucket: ${params.Bucket}, prefix: ${params.Prefix || 'none'}`);
+    
+    const command = new ListObjectsV2Command({
+      Bucket: params.Bucket,
+      Prefix: params.Prefix,
+      MaxKeys: params.MaxKeys,
+    });
+
+    const response = await this.s3Client.send(command);
+    const objects = response.Contents || [];
+    
+    this.logger.log(`Found ${objects.length} objects in S3`);
+    return objects;
+  }
+
+  async checkS3ObjectExists(bucketName: string, key: string): Promise<boolean> {
+    this.logger.log(`Checking if S3 object exists: ${bucketName}/${key}`);
+    
+    try {
+      const command = new HeadObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+      });
+
+      await this.s3Client.send(command);
+      this.logger.log(`S3 object exists: ${bucketName}/${key}`);
+      return true;
+    } catch (error: any) {
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+        this.logger.log(`S3 object does not exist: ${bucketName}/${key}`);
+        return false;
+      }
+      // Re-throw other errors
+      throw error;
+    }
   }
 
   async startSageMakerProcessingJob(jobName: string, inputDataConfig: any, outputDataConfig: any, processingResources: any): Promise<string> {

@@ -100,7 +100,7 @@ echo -e "${YELLOW}   📊 Building with matplotlib + seaborn + pandas...${NC}"
 echo -e "${GREEN}   ✅ Python Lambda packaged: visualization-generator-deployment.zip${NC}"
 cd ..
 
-echo -e "${BLUE}🎯 Building Python Lambda: k-selector (PHASE 2.2 - Dynamic K Selection)${NC}"
+echo -e "${BLUE}🎯 Building Python Lambda: k-selector (Dynamic K Selection)${NC}"
 cd k-selector
 chmod +x build.sh
 echo -e "${YELLOW}   🧮 Building with numpy for K-means optimization...${NC}"
@@ -119,7 +119,7 @@ echo "   • Vegetation Analyzer - Python 3.11 + lambgeo layer + GDAL 3.8.3 + ra
 echo "   • Results Consolidator - Python 3.11 + pure Python (no dependencies)"
 echo "   • Model Manager - Python 3.11 + pure Python (boto3 for S3/DynamoDB)"
 echo "   • Visualization Generator - Python 3.11 + matplotlib + seaborn + pandas"
-echo "   • K-Selector (PHASE 2.2) - Python 3.11 + numpy (Dynamic K Selection)"
+echo "   • K-Selector - Python 3.11 + numpy (Dynamic K Selection)"
 echo "   • Search Images - Java 17 + SnapStart + HTTP Client"
 echo "   • SageMaker Processor - Java 17 + SnapStart + ML"
 echo ""

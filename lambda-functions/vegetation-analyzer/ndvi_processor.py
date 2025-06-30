@@ -18,7 +18,7 @@ class VegetationProcessor:
     Calculates NDVI (Normalized Difference Vegetation Index) from Sentinel-2 satellite imagery.
     NDVI = (NIR - Red) / (NIR + Red)
     
-    PHASE 1 ENHANCEMENT: Now extracts real pixel data arrays with spatial coordinates
+    Extracts real pixel data arrays with spatial coordinates
     for K-means clustering instead of just statistical summaries.
     """
     
@@ -41,7 +41,7 @@ class VegetationProcessor:
         """
         Calculate NDVI and extract real pixel data with spatial coordinates
         
-        PHASE 1 ENHANCEMENT: Now returns both statistics AND pixel arrays for K-means clustering
+        Returns both statistics AND pixel arrays for K-means clustering
         
         Args:
             red_url: URL to red band (B04) - usually JPEG2000 format
@@ -66,7 +66,7 @@ class VegetationProcessor:
                     logger.info(f"🔴 Red band: {red_src.width}x{red_src.height}, CRS: {red_src.crs}")
                     logger.info(f"🟢 NIR band: {nir_src.width}x{nir_src.height}, CRS: {nir_src.crs}")
                     
-                    # PHASE 1: Extract pixel arrays with coordinates
+                    # Extract pixel arrays with coordinates
                     logger.info(f"🧩 Extracting pixel data in {self.chunk_size}x{self.chunk_size} chunks...")
                     statistics, pixel_data = self._extract_pixel_data_chunked(red_src, nir_src)
                     
@@ -91,7 +91,7 @@ class VegetationProcessor:
     def _extract_pixel_data_chunked(self, red_src: rasterio.DatasetReader, 
                                    nir_src: rasterio.DatasetReader) -> Tuple[Dict[str, float], List[List[float]]]:
         """
-        PHASE 1: Extract real pixel data with spatial coordinates from satellite imagery
+        Extract real pixel data with spatial coordinates from satellite imagery
         """
         
         height, width = red_src.height, red_src.width
@@ -357,7 +357,7 @@ class VegetationProcessor:
                                  ndvi_chunk: np.ndarray, transform, chunk_row: int, 
                                  chunk_col: int, sampling_rate: int, src_crs: str) -> List[List[float]]:
         """
-        PHASE 1: Extract pixel feature vectors from a chunk with spatial coordinates
+        Extract pixel feature vectors from a chunk with spatial coordinates
         
         Args:
             red_chunk: Red band chunk

@@ -49,22 +49,23 @@ def lambda_handler(event, context):
 
 def get_latest_model(event):
     """
-    Finds the latest version of a model for a given tile_id in S3.
+    Finds the latest version of a model for a given tile_id and region in S3.
     """
     tile_id = event.get('tile_id')
-    if not tile_id:
-        raise ValueError("Missing 'tile_id' for get-latest-model mode.")
+    region = event.get('region')
+    if not tile_id or not region:
+        raise ValueError("Missing 'tile_id' or 'region' for get-latest-model mode.")
         
-    logger.info(f"🔍 Searching for latest model for tile: {tile_id}")
+    logger.info(f"🔍 Searching for latest model for tile: {tile_id} in region: {region}")
     
-    prefix = f"{MODEL_STORAGE_PREFIX}/{tile_id}/"
+    prefix = f"{MODEL_STORAGE_PREFIX}/{region}/{tile_id}/"
     
     try:
         response = s3.list_objects_v2(Bucket=PROCESSED_DATA_BUCKET, Prefix=prefix, Delimiter='/')
         
         # Get all subdirectories (which are timestamps)
         if 'CommonPrefixes' not in response:
-            logger.info(f"✅ No existing models found for tile: {tile_id}. A new model will be trained.")
+            logger.info(f"✅ No existing models found for tile: {tile_id} in region: {region}. A new model will be trained.")
             return {"model_exists": False}
             
         # Sort timestamps to find the most recent
@@ -85,7 +86,7 @@ def get_latest_model(event):
         }
         
     except Exception as e:
-        logger.error(f"❌ Error getting latest model for {tile_id}: {e}")
+        logger.error(f"❌ Error getting latest model for {tile_id} in region {region}: {e}")
         # If any error occurs, assume no model exists to allow training to proceed
         return {"model_exists": False}
 
@@ -95,13 +96,14 @@ def save_new_model(event):
     """
     training_job_name = event.get('training_job_name')
     tile_id = event.get('tile_id')
+    region = event.get('region')
     source_image_id = event.get('source_image_id')
     training_data_path = event.get('training_data_path')
     
-    if not all([training_job_name, tile_id, source_image_id, training_data_path]):
+    if not all([training_job_name, tile_id, region, source_image_id, training_data_path]):
         raise ValueError("Missing one or more required fields for save-new-model mode.")
 
-    logger.info(f"💾 Saving new model from training job: {training_job_name}")
+    logger.info(f"💾 Saving new model from training job: {training_job_name} for region {region}")
 
     try:
         # 1. Get the original model artifact path from SageMaker
@@ -112,7 +114,7 @@ def save_new_model(event):
         # 2. Define the new structured path
         timestamp = datetime.utcnow()
         version_str = timestamp.strftime('%Y%m%d-%H%M%S')
-        new_prefix = f"{MODEL_STORAGE_PREFIX}/{tile_id}/{version_str}/"
+        new_prefix = f"{MODEL_STORAGE_PREFIX}/{region}/{tile_id}/{version_str}/"
         new_model_key = f"{new_prefix}model.tar.gz"
         
         source_bucket, source_key = original_model_path.replace("s3://", "").split("/", 1)
@@ -128,6 +130,7 @@ def save_new_model(event):
         # 4. Create and upload metadata.json
         metadata = {
             "tile_id": tile_id,
+            "region": region,
             "model_version": version_str,
             "model_s3_path": f"s3://{PROCESSED_DATA_BUCKET}/{new_model_key}",
             "training_data_s3_path": training_data_path,
@@ -162,21 +165,22 @@ def save_new_model(event):
 
 def get_model_history(event):
     """
-    Gets all historical models for a given tile_id, sorted by creation date.
+    Gets all historical models for a given tile_id and region, sorted by creation date.
     """
     tile_id = event.get('tile_id')
-    if not tile_id:
-        raise ValueError("Missing 'tile_id' for get-model-history mode.")
+    region = event.get('region')
+    if not tile_id or not region:
+        raise ValueError("Missing 'tile_id' or 'region' for get-model-history mode.")
         
-    logger.info(f"📚 Getting model history for tile: {tile_id}")
+    logger.info(f"📚 Getting model history for tile: {tile_id} in region: {region}")
     
-    prefix = f"{MODEL_STORAGE_PREFIX}/{tile_id}/"
+    prefix = f"{MODEL_STORAGE_PREFIX}/{region}/{tile_id}/"
     
     try:
         response = s3.list_objects_v2(Bucket=PROCESSED_DATA_BUCKET, Prefix=prefix, Delimiter='/')
         
         if 'CommonPrefixes' not in response:
-            logger.info(f"✅ No historical models found for tile: {tile_id}")
+            logger.info(f"✅ No historical models found for tile: {tile_id} in region: {region}")
             return {"models": []}
             
         # Get all model versions sorted by timestamp (newest first)
@@ -194,27 +198,28 @@ def get_model_history(event):
                 logger.warning(f"⚠️ Could not load metadata for {version_prefix}: {e}")
                 continue
         
-        logger.info(f"📚 Found {len(models)} historical models for tile: {tile_id}")
+        logger.info(f"📚 Found {len(models)} historical models for tile: {tile_id} in region: {region}")
         return {"models": models}
         
     except Exception as e:
-        logger.error(f"❌ Error getting model history for {tile_id}: {e}")
+        logger.error(f"❌ Error getting model history for {tile_id} in region {region}: {e}")
         raise
 
 def compare_models(event):
     """
-    PHASE 4.1: Enhanced cluster-based change detection
+    Enhanced cluster-based change detection
     Compares current and historical models using metadata and pixel statistics.
     """
     tile_id = event.get('tile_id')
+    region = event.get('region')
     current_model_path = event.get('current_model_path')
     historical_model_path = event.get('historical_model_path')
     pixel_data_path = event.get('pixel_data_path')
     
-    if not all([tile_id, current_model_path, historical_model_path, pixel_data_path]):
+    if not all([tile_id, region, current_model_path, historical_model_path, pixel_data_path]):
         raise ValueError("Missing required parameters for compare-models mode.")
     
-    logger.info(f"🔍 PHASE 4.1: Performing intelligent change detection for tile: {tile_id}")
+    logger.info(f"Performing intelligent change detection for tile: {tile_id} in region: {region}")
     logger.info(f"   Current model: {current_model_path}")
     logger.info(f"   Historical model: {historical_model_path}")
     logger.info(f"   Pixel data: {pixel_data_path}")
@@ -232,12 +237,13 @@ def compare_models(event):
             current_metadata, historical_metadata, pixel_statistics, tile_id
         )
         
-        logger.info(f"✅ Change detection completed for {tile_id}")
+        logger.info(f"✅ Change detection completed for {tile_id} in region {region}")
         
         return {
             "status": "completed",
             "message": "Intelligent cluster-based change detection completed",
             "tile_id": tile_id,
+            "region": region,
             "current_model": current_model_path,
             "historical_model": historical_model_path,
             "temporal_span_days": change_metrics.get('temporal_span_days', 0),
@@ -245,13 +251,14 @@ def compare_models(event):
         }
         
     except Exception as e:
-        logger.error(f"❌ Change detection failed for {tile_id}: {str(e)}")
+        logger.error(f"❌ Change detection failed for {tile_id} in region {region}: {str(e)}")
         
         # Fallback to basic comparison
         return {
             "status": "basic_comparison",
             "message": f"Advanced change detection failed, using basic comparison: {str(e)}",
             "tile_id": tile_id,
+            "region": region,
             "current_model": current_model_path,
             "historical_model": historical_model_path,
             "change_detection": {
@@ -303,7 +310,7 @@ def load_pixel_statistics(pixel_data_path):
 
 def detect_vegetation_changes(current_metadata, historical_metadata, pixel_statistics, tile_id):
     """
-    PHASE 4.1: Intelligent vegetation change detection using model metadata
+    Intelligent vegetation change detection using model metadata
     """
     
     # Calculate temporal span
@@ -380,22 +387,27 @@ def detect_vegetation_changes(current_metadata, historical_metadata, pixel_stati
 
 def track_model_performance(event):
     """
-    PHASE 6.1: Model Performance Tracking
-    
-    Track cluster stability metrics and model performance over time.
-    This helps us understand how well our models are performing and
-    whether they're maintaining consistent clustering patterns.
+    Tracks model performance metrics over time for a specific tile and region.
+    This can be used to monitor for concept drift or performance degradation.
     """
-    
+    tile_id = event.get('tile_id')
+    region = event.get('region')
+    if not tile_id or not region:
+        raise ValueError("Missing 'tile_id' or 'region' for track-model-performance mode.")
+
+    logger.info(f"📈 Tracking performance for tile: {tile_id} in region: {region}")
+
     try:
-        logger.info("📊 PHASE 6.1: Starting model performance tracking...")
+        # Fetch all historical models for the tile and region
+        history_event = {'tile_id': tile_id, 'region': region}
+        model_history_response = get_model_history(history_event)
         
-        tile_id = event.get('tile_id')
-        model_metadata = event.get('model_metadata', {})
-        performance_metrics = event.get('performance_metrics', {})
-        
-        if not tile_id:
-            raise ValueError("tile_id is required for performance tracking")
+        if not model_history_response or not model_history_response.get('models'):
+            logger.info(f"No model history found for tile {tile_id}, region {region}. Cannot track performance.")
+            return {
+                "status": "no_history",
+                "message": "No historical models available to track performance."
+            }
         
         # Load existing performance history
         performance_history_key = f"model-performance/{tile_id}/performance_history.json"
@@ -406,6 +418,7 @@ def track_model_performance(event):
             # Initialize new performance history
             performance_history = {
                 'tile_id': tile_id,
+                'region': region,
                 'tracking_started': datetime.utcnow().isoformat() + 'Z',
                 'performance_entries': [],
                 'summary_stats': {
@@ -419,17 +432,17 @@ def track_model_performance(event):
         # Create new performance entry
         performance_entry = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
-            'model_path': model_metadata.get('model_s3_path', ''),
-            'training_job_name': model_metadata.get('training_job_name', ''),
-            'image_id': model_metadata.get('source_image_id', ''),
-            'cluster_stability': calculate_cluster_stability_score(model_metadata),
-            'spatial_coherence': performance_metrics.get('spatial_coherence_confidence', 0.0),
-            'data_quality': performance_metrics.get('data_quality_confidence', 0.0),
-            'historical_consistency': performance_metrics.get('historical_consistency_confidence', 0.0),
-            'overall_confidence': performance_metrics.get('overall_confidence', 0.0),
-            'processing_time_ms': model_metadata.get('processing_time_ms', 0),
-            'pixels_analyzed': model_metadata.get('pixels_analyzed', 0),
-            'model_reused': model_metadata.get('model_reused', False)
+            'model_path': model_history_response['models'][-1]['model_s3_path'],
+            'training_job_name': model_history_response['models'][-1]['source_training_job'],
+            'image_id': model_history_response['models'][-1]['source_image_id'],
+            'cluster_stability': calculate_cluster_stability_score(model_history_response['models'][-1]),
+            'spatial_coherence': model_history_response['models'][-1]['performance_metrics'].get('spatial_coherence_confidence', 0.0),
+            'data_quality': model_history_response['models'][-1]['performance_metrics'].get('data_quality_confidence', 0.0),
+            'historical_consistency': model_history_response['models'][-1]['performance_metrics'].get('historical_consistency_confidence', 0.0),
+            'overall_confidence': model_history_response['models'][-1]['confidence_score'],
+            'processing_time_ms': model_history_response['models'][-1]['performance_metrics'].get('processing_time_ms', 0),
+            'pixels_analyzed': model_history_response['models'][-1]['pixels_analyzed'],
+            'model_reused': False
         }
         
         # Add to history
@@ -458,7 +471,7 @@ def track_model_performance(event):
         # Save updated performance history
         save_json_to_s3(PROCESSED_DATA_BUCKET, performance_history_key, performance_history)
         
-        logger.info(f"📊 Performance tracking updated for {tile_id}")
+        logger.info(f"📊 Performance tracking updated for {tile_id} in region {region}")
         logger.info(f"   Total analyses: {total_entries}")
         logger.info(f"   Avg confidence: {performance_history['summary_stats']['avg_overall_confidence']:.2f}")
         logger.info(f"   Model reuse rate: {performance_history['summary_stats']['model_reuse_rate']:.1%}")
@@ -468,6 +481,7 @@ def track_model_performance(event):
             'body': json.dumps({
                 'status': 'success',
                 'tile_id': tile_id,
+                'region': region,
                 'performance_summary': performance_history['summary_stats'],
                 'anomalies_detected': len(anomalies) if anomalies else 0,
                 'tracking_entries': total_entries

@@ -296,7 +296,8 @@ export class SentinelController {
           startDate: "2022-06-01",
           endDate: "2022-09-01",
           cloudCover: 20
-        }
+        },
+        maxImages: 10
       }
     }
   })
@@ -311,11 +312,36 @@ export class SentinelController {
       }
     }
   })
-  async triggerWorkflow(@Body() body: { searchParams: SearchParams }) {
+  async triggerWorkflow(@Body() body: { searchParams: SearchParams, maxImages?: number }) {
     this.logger.log('Triggering Step Functions workflow');
-    
-    const execution = await this.sentinelService.triggerStepFunctionsWorkflow(body.searchParams);
-    
+    const { searchParams, maxImages } = body;
+
+    // Try to find region info by coordinates
+    let regionId: string | undefined = undefined;
+    let regionName: string | undefined = undefined;
+    try {
+      const regions = await this.dashboardService.getAllRegions();
+      const found = regions.find(r =>
+        Math.abs(r.latitude - searchParams.latitude) < 0.01 &&
+        Math.abs(r.longitude - searchParams.longitude) < 0.01
+      );
+      if (found) {
+        regionId = found.regionId;
+        regionName = found.name;
+      }
+    } catch (e) {
+      this.logger.warn('Could not look up region info for Step Function input: ' + e.message);
+    }
+
+    // Compose enriched input
+    const stepInput = {
+      ...searchParams,
+      regionId,
+      regionName,
+      limit: maxImages || 1
+    };
+
+    const execution = await this.sentinelService.triggerStepFunctionsWorkflow(stepInput);
     return {
       success: true,
       executionArn: execution.executionArn,

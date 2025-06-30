@@ -25,7 +25,7 @@ VISUALIZATION_PREFIX = 'visualizations'
 
 def lambda_handler(event, context):
     """
-    PHASE 4.2: K-means Visualization Generator
+    K-means Visualization Generator
     
     Generates beautiful plots of clustering results and saves them to S3.
     
@@ -40,7 +40,7 @@ def lambda_handler(event, context):
     """
     
     try:
-        logger.info("🎨 PHASE 4.2: Starting K-means visualization generation")
+        logger.info("Starting K-means visualization generation")
         
         mode = event.get('mode', 'generate-cluster-plots')
         
@@ -81,6 +81,16 @@ def generate_cluster_visualizations(event):
         pixel_data = load_pixel_data_from_s3(pixel_data_path)
         cluster_assignments = load_cluster_results_from_s3(sagemaker_results_path) if sagemaker_results_path else None
         
+        if not pixel_data:
+            logger.error(f"❌ No pixel data loaded from {pixel_data_path}")
+            raise ValueError(f"Failed to load pixel data from {pixel_data_path}")
+        
+        logger.info(f"📊 Loaded {len(pixel_data)} pixels for visualization")
+        if cluster_assignments:
+            logger.info(f"🎯 Found {len(set(cluster_assignments))} clusters")
+        else:
+            logger.info("⚠️ No cluster assignments found - generating visualizations without clustering")
+        
         # 2. Create timestamp for organized storage
         timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
         viz_prefix = f"{VISUALIZATION_PREFIX}/{tile_id}/{timestamp}"
@@ -88,25 +98,24 @@ def generate_cluster_visualizations(event):
         # 3. Generate different types of visualizations
         visualization_urls = {}
         
-        # Plot 1: NDVI vs Red Band Scatter Plot with Clusters
-        if cluster_assignments:
-            viz_urls = create_ndvi_red_cluster_plot(pixel_data, cluster_assignments, viz_prefix, tile_id)
-            visualization_urls.update(viz_urls)
+        # Plot 1: NDVI vs Red Band Scatter Plot (with or without clusters)
+        viz_urls = create_ndvi_red_cluster_plot(pixel_data, cluster_assignments, viz_prefix, tile_id)
+        visualization_urls.update(viz_urls)
         
-        # Plot 2: Geographic Distribution of Pixels
+        # Plot 2: Geographic Distribution of Pixels (with or without clusters)
         geo_urls = create_geographic_distribution_plot(pixel_data, cluster_assignments, viz_prefix, tile_id)
         visualization_urls.update(geo_urls)
         
-        # Plot 3: Feature Distribution Histograms
+        # Plot 3: Feature Distribution Histograms (always generate)
         hist_urls = create_feature_distribution_plots(pixel_data, viz_prefix, tile_id)
         visualization_urls.update(hist_urls)
         
-        # Plot 4: Cluster Statistics Summary
+        # Plot 4: Cluster Statistics Summary (only if clusters available)
         if cluster_assignments:
             stats_urls = create_cluster_statistics_plot(pixel_data, cluster_assignments, viz_prefix, tile_id)
             visualization_urls.update(stats_urls)
         
-        # Plot 5: NDVI vs NIR Scatter Plot
+        # Plot 5: NDVI vs NIR Scatter Plot (with or without clusters)
         ndvi_nir_urls = create_ndvi_nir_plot(pixel_data, cluster_assignments, viz_prefix, tile_id)
         visualization_urls.update(ndvi_nir_urls)
         
@@ -130,22 +139,49 @@ def generate_cluster_visualizations(event):
         raise
 
 def load_pixel_data_from_s3(s3_path):
-    """Load pixel data from S3 path"""
+    """Load pixel data from S3 path - handles both JSON and CSV formats"""
     try:
         bucket_name = s3_path.split('/')[2]
         key = '/'.join(s3_path.split('/')[3:])
         
         response = s3.get_object(Bucket=bucket_name, Key=key)
-        data = json.loads(response['Body'].read().decode('utf-8'))
         
-        # Extract pixel features: [ndvi, red, nir, lat, lng]
-        if 'pixel_data' in data:
-            return data['pixel_data']
-        elif isinstance(data, list):
-            return data
+        # Check if it's a CSV file
+        if s3_path.endswith('.csv'):
+            logger.info(f"📊 Loading CSV pixel data from {s3_path}")
+            import csv
+            import io
+            
+            csv_content = response['Body'].read().decode('utf-8')
+            csv_reader = csv.reader(io.StringIO(csv_content))
+            
+            pixel_data = []
+            for row_num, row in enumerate(csv_reader):
+                if len(row) >= 5:  # Expecting 5 features: ndvi, red, nir, lat, lng
+                    try:
+                        pixel = [float(val) for val in row[:5]]
+                        pixel_data.append(pixel)
+                    except ValueError as ve:
+                        if row_num == 0:  # Skip header row if present
+                            continue
+                        logger.warning(f"⚠️ Skipping invalid row {row_num}: {row}")
+                        
+            logger.info(f"✅ Loaded {len(pixel_data)} pixels from CSV")
+            return pixel_data
+            
         else:
-            logger.warning(f"⚠️ Unexpected data format in {s3_path}")
-            return []
+            # Try to load as JSON
+            logger.info(f"📊 Loading JSON pixel data from {s3_path}")
+            data = json.loads(response['Body'].read().decode('utf-8'))
+            
+            # Extract pixel features: [ndvi, red, nir, lat, lng]
+            if 'pixel_data' in data:
+                return data['pixel_data']
+            elif isinstance(data, list):
+                return data
+            else:
+                logger.warning(f"⚠️ Unexpected JSON data format in {s3_path}")
+                return []
             
     except Exception as e:
         logger.error(f"❌ Failed to load pixel data from {s3_path}: {str(e)}")
@@ -160,6 +196,15 @@ def load_cluster_results_from_s3(s3_path):
         bucket_name = s3_path.split('/')[2]
         key = '/'.join(s3_path.split('/')[3:])
         
+        # Check if it's a tar.gz file (SageMaker model output)
+        if s3_path.endswith('.tar.gz') or s3_path.endswith('.tgz'):
+            logger.warning(f"⚠️ Cannot directly load cluster assignments from compressed model file: {s3_path}")
+            logger.info("💡 SageMaker model.tar.gz contains the trained model, not cluster assignments")
+            logger.info("💡 To get cluster assignments, you would need to run inference on the pixel data")
+            logger.info("💡 Proceeding to generate visualizations without cluster assignments")
+            return None
+        
+        # Try to load JSON cluster assignments
         response = s3.get_object(Bucket=bucket_name, Key=key)
         data = json.loads(response['Body'].read().decode('utf-8'))
         
@@ -209,7 +254,10 @@ def create_ndvi_red_cluster_plot(pixel_data, cluster_assignments, viz_prefix, ti
         
         plt.xlabel('NDVI (Normalized Difference Vegetation Index)', fontsize=12)
         plt.ylabel('Red Band Reflectance', fontsize=12)
-        plt.title(f'K-means Clustering: NDVI vs Red Band\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
+        if cluster_assignments:
+            plt.title(f'K-means Clustering: NDVI vs Red Band\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
+        else:
+            plt.title(f'NDVI vs Red Band Distribution\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
         
         if cluster_assignments:
             plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -260,7 +308,10 @@ def create_geographic_distribution_plot(pixel_data, cluster_assignments, viz_pre
         
         plt.xlabel('Longitude', fontsize=12)
         plt.ylabel('Latitude', fontsize=12)
-        plt.title(f'Geographic Distribution of Analyzed Pixels\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
+        if cluster_assignments:
+            plt.title(f'Geographic Distribution by Cluster\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
+        else:
+            plt.title(f'Geographic Distribution of Analyzed Pixels\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
         
         if cluster_assignments:
             plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -443,7 +494,10 @@ def create_ndvi_nir_plot(pixel_data, cluster_assignments, viz_prefix, tile_id):
         
         plt.xlabel('NDVI (Normalized Difference Vegetation Index)', fontsize=12)
         plt.ylabel('NIR Band Reflectance', fontsize=12)
-        plt.title(f'K-means Clustering: NDVI vs NIR Band\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
+        if cluster_assignments:
+            plt.title(f'K-means Clustering: NDVI vs NIR Band\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
+        else:
+            plt.title(f'NDVI vs NIR Band Distribution\nTile: {tile_id} | Pixels: {len(pixel_data):,}', fontsize=14)
         
         if cluster_assignments:
             plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -471,20 +525,19 @@ def save_plot_to_s3(plt_figure, s3_key):
         plt_figure.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
         buffer.seek(0)
         
-        # Upload to S3
+        # Upload to S3 (without ACL since bucket doesn't support ACLs)
         s3.put_object(
             Bucket=PROCESSED_DATA_BUCKET,
             Key=s3_key,
             Body=buffer.getvalue(),
-            ContentType='image/png',
-            ACL='public-read'  # Make publicly accessible
+            ContentType='image/png'
         )
         
-        # Return public URL
-        public_url = f"https://{PROCESSED_DATA_BUCKET}.s3.amazonaws.com/{s3_key}"
-        logger.info(f"📊 Saved visualization: {public_url}")
+        # Return S3 path (API will generate signed URLs as needed)
+        s3_path = f"s3://{PROCESSED_DATA_BUCKET}/{s3_key}"
+        logger.info(f"📊 Saved visualization: {s3_path}")
         
-        return public_url
+        return s3_path
         
     except Exception as e:
         logger.error(f"❌ Failed to save plot to S3: {str(e)}")

@@ -67,13 +67,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Calculate aggregate statistics
         statistics = calculate_aggregate_statistics(successful_results)
         
-        # PHASE 4.4: Calculate confidence scores
+        # Calculate confidence scores
         confidence_scores = calculate_confidence_scores(successful_results, statistics)
         
         # Determine risk level and alert type
         risk_assessment = assess_deforestation_risk(statistics, successful_results)
         
-        # PHASE 6.2: Track alert quality metrics
+        # Track alert quality metrics
         alert_quality_metrics = track_alert_quality(
             statistics=statistics,
             risk_assessment=risk_assessment,
@@ -128,8 +128,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'processing_timestamp': datetime.utcnow().isoformat() + 'Z',
             'statistics': statistics,
             'risk_assessment': risk_assessment,
-            'confidence_scores': confidence_scores,  # PHASE 4.4: Include confidence metrics
-            'alert_quality_metrics': alert_quality_metrics,  # PHASE 6.2: Include quality tracking
+            'confidence_scores': confidence_scores,
+            'alert_quality_metrics': alert_quality_metrics,
             'email_content': email_content,
             'pdf_report': {
                 'download_url': pdf_download_url,
@@ -139,7 +139,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'results': event  # Include original results for reference
         }
         
-        # PHASE 6.1: Track model performance for each analyzed tile
+        # Track model performance for each analyzed tile
         try:
             for result in successful_results:
                 if result.get('imageId'):
@@ -227,7 +227,7 @@ def calculate_aggregate_statistics(results: List[Dict[str, Any]]) -> Dict[str, f
 
 def assess_deforestation_risk(statistics: Dict[str, float], processing_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    PHASE 4.1: Intelligent cluster-based risk assessment using model comparison
+    Intelligent cluster-based risk assessment using model comparison
     Replaces threshold-based analysis with ML-driven change detection
     """
     
@@ -458,7 +458,7 @@ def determine_intelligent_risk_level(model_analysis: Dict[str, Any], change_dete
 
 def calculate_confidence_scores(processing_results: List[Dict[str, Any]], statistics: Dict[str, float]) -> Dict[str, Any]:
     """
-    PHASE 4.4: Comprehensive confidence scoring system
+    Comprehensive confidence scoring system
     
     Calculates multiple confidence metrics:
     1. Distance-to-cluster-center confidence
@@ -468,7 +468,7 @@ def calculate_confidence_scores(processing_results: List[Dict[str, Any]], statis
     """
     
     try:
-        logger.info("🎯 PHASE 4.4: Calculating confidence scores...")
+        logger.info("Calculating confidence scores...")
         
         confidence_metrics = {
             'distance_to_center_confidence': 0.0,
@@ -1195,12 +1195,12 @@ def generate_failure_pdf_report(all_results: List[Dict[str, Any]], failed_result
 def track_alert_quality(statistics: Dict[str, float], risk_assessment: Dict[str, Any], 
                        confidence_scores: Dict[str, Any], processing_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    PHASE 6.2: Track alert quality metrics including false positives, detection sensitivity,
+    Track alert quality metrics including false positives, detection sensitivity,
     temporal accuracy, and performance comparison against threshold-based system
     """
     
     try:
-        logger.info("📈 PHASE 6.2: Tracking alert quality metrics...")
+        logger.info("Tracking alert quality metrics...")
         
         # Initialize AWS S3 client for storing quality metrics
         s3_client = boto3.client('s3')

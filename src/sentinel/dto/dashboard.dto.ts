@@ -219,4 +219,41 @@ export class HeatmapResponseDto {
 
   @ApiProperty({ example: 30, description: 'Number of days the data covers' })
   periodDays: number;
+}
+
+export class VisualizationDto {
+  @ApiProperty({ example: 'ndvi_red_clusters', description: 'Type of visualization chart' })
+  chartType: string;
+
+  @ApiProperty({ example: 'S2B_MSIL2A_20231215T143751_N0509_R096_T20LLP_20231215T174821', description: 'Tile ID associated with the visualization' })
+  tileId: string;
+
+  @ApiProperty({ example: '20241215-143000', description: 'Generation timestamp' })
+  timestamp: string;
+
+  @ApiProperty({ example: 'https://forestshield-processed-data-381492060635.s3.amazonaws.com/visualizations/S2B/20241215-143000/ndvi_red_clusters.png', description: 'Public URL to access the visualization' })
+  url: string;
+
+  @ApiProperty({ example: '2024-12-15T14:30:00Z', description: 'When the visualization was created' })
+  createdAt: string;
+
+  @ApiProperty({ example: 'NDVI vs Red Band K-means Clustering', description: 'Human-readable description of the chart' })
+  description: string;
+}
+
+export class RegionVisualizationsDto {
+  @ApiProperty({ example: 'region-123abc', description: 'Region identifier' })
+  regionId: string;
+
+  @ApiProperty({ example: 'Amazon Rainforest - Sector A', description: 'Region name' })
+  regionName: string;
+
+  @ApiProperty({ type: [VisualizationDto], description: 'Available visualizations for this region' })
+  visualizations: VisualizationDto[];
+
+  @ApiProperty({ example: 15, description: 'Total number of visualizations available' })
+  totalVisualizations: number;
+
+  @ApiProperty({ example: '2024-12-15T14:30:00Z', description: 'When this data was retrieved' })
+  retrievedAt: string;
 } 

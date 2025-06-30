@@ -21,7 +21,9 @@ import {
   MonitoringJobDto, 
   HeatmapResponseDto, 
   AlertLevel, 
-  RegionStatus 
+  RegionStatus,
+  VisualizationDto,
+  RegionVisualizationsDto
 } from './dto/dashboard.dto';
 import { DashboardService } from './services/dashboard.service';
 import { AWSMonitoringService } from './services/aws-monitoring.service';
@@ -374,6 +376,165 @@ export class DashboardController {
     } catch (error) {
       this.logger.error(`Failed to generate signed URL for NDVI image ${imageId}: ${error.message}`);
       throw new HttpException('NDVI image not found or access denied', HttpStatus.NOT_FOUND);
+    }
+  }
+
+  @Get('regions/:regionId/visualizations')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'List available k-means visualizations for a region',
+    description: 'Returns a list of available k-means clustering visualization charts for a specific region'
+  })
+  @ApiParam({ name: 'regionId', description: 'Unique region identifier' })
+  @ApiQuery({ name: 'limit', required: false, type: 'number', description: 'Maximum number of visualizations to return (default: 50)' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Visualizations list retrieved successfully',
+    type: RegionVisualizationsDto
+  })
+  @ApiResponse({ status: 404, description: 'Region not found' })
+  async getRegionVisualizations(
+    @Param('regionId') regionId: string,
+    @Query('limit') limit: number = 50
+  ): Promise<RegionVisualizationsDto> {
+    this.logger.log(`Listing k-means visualizations for region: ${regionId}`);
+    
+    const region = await this.dashboardService.getRegionById(regionId);
+    if (!region) {
+      throw new HttpException('Region not found', HttpStatus.NOT_FOUND);
+    }
+
+    const bucketName = this.configService.get<string>('PROCESSED_DATA_BUCKET') || 'forestshield-processed-data-381492060635';
+    const visualizationPrefix = 'visualizations/';
+
+    try {
+      // List all visualization objects in S3
+      const listParams = {
+        Bucket: bucketName,
+        Prefix: visualizationPrefix,
+        MaxKeys: limit * 5 // Get more than needed to filter and sort
+      };
+
+      const s3Objects = await this.awsService.listS3Objects(listParams);
+      const visualizations: VisualizationDto[] = [];
+
+      for (const obj of s3Objects) {
+        if (obj.Key && obj.Key.endsWith('.png')) {
+          // Parse the S3 key: visualizations/{tileId}/{timestamp}/{chartType}.png
+          const keyParts = obj.Key.split('/');
+          if (keyParts.length >= 4) {
+            const tileId = keyParts[1];
+            const timestamp = keyParts[2];
+            const fileName = keyParts[3];
+            const chartType = fileName.replace('.png', '');
+
+            // Map chart types to human-readable descriptions
+            const chartDescriptions: { [key: string]: string } = {
+              'ndvi_red_clusters': 'NDVI vs Red Band K-means Clustering',
+              'geographic_distribution': 'Geographic Distribution of Pixel Clusters',
+              'feature_distributions': 'Feature Distribution Histograms',
+              'cluster_statistics': 'Cluster Statistics and Analysis',
+              'ndvi_nir_clusters': 'NDVI vs NIR Band K-means Clustering'
+            };
+
+            visualizations.push({
+              chartType,
+              tileId,
+              timestamp,
+              url: `https://${bucketName}.s3.amazonaws.com/${obj.Key}`,
+              createdAt: obj.LastModified?.toISOString() || new Date().toISOString(),
+              description: chartDescriptions[chartType] || `${chartType} visualization`
+            });
+          }
+        }
+      }
+
+      // Sort by creation date (newest first) and limit results
+      visualizations.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      const limitedVisualizations = visualizations.slice(0, limit);
+
+      this.logger.log(`Found ${limitedVisualizations.length} visualizations for region ${regionId}`);
+
+      return {
+        regionId,
+        regionName: region.name,
+        visualizations: limitedVisualizations,
+        totalVisualizations: limitedVisualizations.length,
+        retrievedAt: new Date().toISOString()
+      };
+
+    } catch (error) {
+      this.logger.error(`Failed to list visualizations for region ${regionId}: ${error.message}`);
+      throw new HttpException('Failed to retrieve visualizations', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Get('visualizations/:tileId/:timestamp/:chartType')
+  @ApiTags('Monitoring & Analysis')
+  @ApiOperation({ 
+    summary: 'Get specific k-means visualization with signed URL',
+    description: 'Returns a signed URL for accessing a specific k-means clustering visualization chart'
+  })
+  @ApiParam({ name: 'tileId', description: 'Sentinel-2 tile identifier' })
+  @ApiParam({ name: 'timestamp', description: 'Visualization generation timestamp (YYYYMMDD-HHMMSS format)' })
+  @ApiParam({ name: 'chartType', description: 'Type of chart (ndvi_red_clusters, geographic_distribution, etc.)' })
+  @ApiQuery({ name: 'expiresIn', required: false, type: 'number', description: 'URL expiration time in seconds (default: 3600)' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Signed URL generated successfully',
+    schema: {
+      example: {
+        signedUrl: 'https://forestshield-processed-data-381492060635.s3.amazonaws.com/visualizations/S2B/20241215-143000/ndvi_red_clusters.png?X-Amz-Algorithm=AWS4-HMAC-SHA256...',
+        tileId: 'S2B_MSIL2A_20231215T143751_N0509_R096_T20LLP_20231215T174821',
+        chartType: 'ndvi_red_clusters',
+        timestamp: '20241215-143000',
+        expiresAt: '2024-12-15T15:30:00Z',
+        description: 'NDVI vs Red Band K-means Clustering'
+      }
+    }
+  })
+  @ApiResponse({ status: 404, description: 'Visualization not found' })
+  async getVisualization(
+    @Param('tileId') tileId: string,
+    @Param('timestamp') timestamp: string,
+    @Param('chartType') chartType: string,
+    @Query('expiresIn') expiresIn: number = 3600
+  ): Promise<{ signedUrl: string; tileId: string; chartType: string; timestamp: string; expiresAt: string; description: string }> {
+    this.logger.log(`Getting visualization: ${tileId}/${timestamp}/${chartType}`);
+    
+    const bucketName = this.configService.get<string>('PROCESSED_DATA_BUCKET') || 'forestshield-processed-data-381492060635';
+    const s3Key = `visualizations/${tileId}/${timestamp}/${chartType}.png`;
+    
+    // Map chart types to descriptions
+    const chartDescriptions: { [key: string]: string } = {
+      'ndvi_red_clusters': 'NDVI vs Red Band K-means Clustering',
+      'geographic_distribution': 'Geographic Distribution of Pixel Clusters',
+      'feature_distributions': 'Feature Distribution Histograms',
+      'cluster_statistics': 'Cluster Statistics and Analysis',
+      'ndvi_nir_clusters': 'NDVI vs NIR Band K-means Clustering'
+    };
+
+    try {
+      // Check if the object exists first
+      await this.awsService.checkS3ObjectExists(bucketName, s3Key);
+      
+      // Generate signed URL
+      const signedUrl = await this.awsService.generateS3SignedUrl(bucketName, s3Key, expiresIn);
+      const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+      
+      this.logger.log(`Generated signed URL for visualization ${chartType}, expires at ${expiresAt}`);
+      
+      return {
+        signedUrl,
+        tileId,
+        chartType,
+        timestamp,
+        expiresAt,
+        description: chartDescriptions[chartType] || `${chartType} visualization`
+      };
+    } catch (error) {
+      this.logger.error(`Failed to generate signed URL for visualization ${tileId}/${timestamp}/${chartType}: ${error.message}`);
+      throw new HttpException('Visualization not found or access denied', HttpStatus.NOT_FOUND);
     }
   }
 
@@ -1051,7 +1212,6 @@ export class DashboardController {
     }
   })
   async runQuickIntegrationTest() {
-    this.logger.log('🧪 Running Phase 6.3 quick integration test');
     return this.dashboardService.runQuickIntegrationTest();
   }
 
@@ -1059,7 +1219,7 @@ export class DashboardController {
   @ApiTags('Integration Testing')
   @ApiOperation({ 
     summary: 'Run comprehensive system integration test',
-    description: 'Executes full Phase 6.3 integration testing suite (15-30 minutes)'
+    description: 'Executes full integration testing suite (15-30 minutes)'
   })
   @ApiResponse({ 
     status: 200, 
@@ -1075,7 +1235,7 @@ export class DashboardController {
     }
   })
   async runComprehensiveIntegrationTest() {
-    this.logger.log('🧪 Starting Phase 6.3 comprehensive integration test');
+    this.logger.log('🧪 Starting comprehensive integration test');
     return this.dashboardService.runComprehensiveIntegrationTest();
   }
 

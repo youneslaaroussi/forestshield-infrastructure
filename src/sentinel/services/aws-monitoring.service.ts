@@ -115,8 +115,6 @@ export class AWSMonitoringService {
     this.logger.log('AWS Monitoring Service initialized for real CloudWatch and Cost Explorer data');
   }
 
-  // PHASE 6.5.1: AWS Service Monitoring Integration
-
   async getAWSServiceMetrics(): Promise<AWSServiceMetrics[]> {
     this.logger.log('Fetching real AWS service metrics from CloudWatch');
     
@@ -441,8 +439,6 @@ export class AWSMonitoringService {
     };
   }
 
-  // PHASE 6.5.2: Cost Explorer Integration
-
   async getCostAndUsageData(): Promise<CostData> {
     this.logger.log('Fetching real cost data from AWS Cost Explorer');
     
@@ -508,8 +504,6 @@ export class AWSMonitoringService {
       computeHours: Math.round(lambdaMetrics.metrics.duration * lambdaMetrics.metrics.invocations / 3600000) // Convert ms to hours
     };
   }
-
-  // PHASE 6.5.3: CloudWatch Logs Integration
 
   async getCloudWatchLogs(logGroupName?: string, limit: number = 50): Promise<CloudWatchLog[]> {
     this.logger.log(`Fetching real CloudWatch logs from ${logGroupName || 'all ForestShield log groups'}`);

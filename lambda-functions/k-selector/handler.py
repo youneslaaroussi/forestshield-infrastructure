@@ -21,7 +21,7 @@ DATA_BUCKET = os.environ.get('PROCESSED_DATA_BUCKET', 'forestshield-processed-da
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
-    PHASE 2.2: Dynamic K Selection for K-means Clustering
+    Dynamic K Selection for K-means Clustering
     
     Runs multiple SageMaker training jobs with different K values in parallel
     and selects the optimal K based on cluster quality metrics.
@@ -37,8 +37,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     
     try:
-        logger.info("🎯 PHASE 2.2: Starting dynamic K selection")
-        logger.info(f"📥 Input event: {json.dumps(event)}")
+        logger.info("Starting dynamic K selection")
+        logger.info(f"Input event: {json.dumps(event)}")
         
         mode = event.get('mode', 'select-optimal-k')
         

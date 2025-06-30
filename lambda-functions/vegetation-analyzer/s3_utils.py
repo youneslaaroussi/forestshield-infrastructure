@@ -33,7 +33,7 @@ class S3Handler:
     def upload_ndvi_result(self, image_id: str, statistics: Dict[str, Any] = None, 
                           pixel_data: List[List[float]] = None) -> Tuple[str, str]:
         """
-        Upload NDVI statistics and REAL pixel data to S3 (PHASE 1 ENHANCEMENT)
+        Upload NDVI statistics and REAL pixel data to S3
         
         Args:
             image_id: Unique image identifier
@@ -47,7 +47,7 @@ class S3Handler:
         # Upload JSON statistics
         ndvi_output = self.upload_ndvi_statistics_only(image_id, statistics)
         
-        # Upload REAL pixel data for SageMaker training (PHASE 1)
+        # Upload REAL pixel data for SageMaker training
         if pixel_data and len(pixel_data) > 0:
             sagemaker_training_data = self.upload_real_pixel_data(image_id, pixel_data)
         else:
@@ -246,9 +246,9 @@ class S3Handler:
 
     def upload_real_pixel_data(self, image_id: str, pixel_data: List[List[float]]) -> str:
         """
-        Upload REAL pixel data for SageMaker K-means training (PHASE 2 ENHANCED)
+        Upload REAL pixel data for SageMaker K-means training
         
-        PHASE 2.1: Multi-Feature Clustering with Feature Scaling
+        Multi-Feature Clustering with Feature Scaling
         - 5 features: [ndvi, red, nir, lat, lng]
         - Feature normalization for different value ranges
         - Optimized for SageMaker K-means algorithm
@@ -270,9 +270,9 @@ class S3Handler:
         s3_key = f"sagemaker-training/{timestamp}/{image_id}_real_pixel_5features.csv"
         s3_path = f"s3://{self.bucket_name}/{s3_key}"
         
-        logger.info(f"🤖 PHASE 2.1: Creating enhanced K-means training data with feature scaling")
-        logger.info(f"📊 Target: {s3_path}")
-        logger.info(f"🔢 Features: [NDVI, Red, NIR, Latitude, Longitude]")
+        logger.info(f"Creating enhanced K-means training data with feature scaling")
+        logger.info(f"Target: {s3_path}")
+        logger.info(f"Features: [NDVI, Red, NIR, Latitude, Longitude]")
         
         try:
             if not pixel_data or len(pixel_data) == 0:
@@ -282,7 +282,7 @@ class S3Handler:
             pixel_array = np.array(pixel_data, dtype=np.float32)
             logger.info(f"📐 Input data shape: {pixel_array.shape}")
             
-            # PHASE 2.1: Feature Scaling Implementation (Manual MinMax Scaling)
+            # Feature Scaling Implementation (Manual MinMax Scaling)
             # Different features have very different ranges:
             # - NDVI: [-1, 1]
             # - Red/NIR bands: [0, 10000+] 
@@ -310,7 +310,7 @@ class S3Handler:
                 else:
                     scaled_pixels[:, i] = 0.0  # All values are the same
             
-            logger.info("🔄 MANUAL FEATURE SCALING APPLIED:")
+            logger.info("MANUAL FEATURE SCALING APPLIED:")
             logger.info(f"   Original ranges:")
             for i, feature in enumerate(['NDVI', 'Red', 'NIR', 'Lat', 'Lng']):
                 logger.info(f"     {feature}: [{feature_mins[i]:.3f}, {feature_maxs[i]:.3f}]")
@@ -359,7 +359,6 @@ class S3Handler:
                     'training-points': str(len(scaled_pixels)),
                     'features': 'ndvi,red,nir,latitude,longitude',
                     'scaling': 'minmax-0-1',
-                    'phase': 'phase2-enhanced-kmeans'
                 }
             )
             
@@ -376,12 +375,12 @@ class S3Handler:
                 }
             )
             
-            # PHASE 7: Store raw, unscaled geospatial data for heatmap analysis
+            # Store raw, unscaled geospatial data for heatmap analysis
             self.upload_raw_geospatial_data(image_id, pixel_array)
 
-            logger.info(f"✅ PHASE 2.1: Enhanced K-means training data uploaded to {s3_path}")
-            logger.info(f"📊 Features: {len(scaled_pixels)} pixels × 5 dimensions")
-            logger.info(f"🔧 Scaler metadata: s3://{self.bucket_name}/{scaler_s3_key}")
+            logger.info(f"Enhanced K-means training data uploaded to {s3_path}")
+            logger.info(f"Features: {len(scaled_pixels)} pixels × 5 dimensions")
+            logger.info(f"Scaler metadata: s3://{self.bucket_name}/{scaler_s3_key}")
             
             return s3_path
             
@@ -410,7 +409,7 @@ class S3Handler:
             s3_key = f"geospatial-data/year={year}/month={month}/day={day}/{image_id}.jsonl"
             s3_path = f"s3://{self.bucket_name}/{s3_key}"
             
-            logger.info(f"🗺️ PHASE 7: Uploading raw geospatial data for Athena to {s3_path}")
+            logger.info(f"Uploading raw geospatial data for Athena to {s3_path}")
             
             # Convert numpy array to JSON Lines format
             jsonl_content = io.StringIO()

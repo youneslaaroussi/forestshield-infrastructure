@@ -224,8 +224,6 @@ export class DashboardService {
       }));
   }
 
-  // PHASE 6.1: Model Performance Tracking Methods
-
   async getSystemPerformanceOverview(): Promise<any> {
     this.logger.log('Fetching system-wide performance overview');
     
@@ -582,7 +580,7 @@ export class DashboardService {
   }
 
   /**
-   * PHASE 6.2: Enhanced performance overview with alert quality metrics
+   * Enhanced performance overview with alert quality metrics
    */
   async getPerformanceOverview(): Promise<any> {
     try {
@@ -594,7 +592,7 @@ export class DashboardService {
         averageConfidence: 0,
         averageProcessingTime: 0,
         modelReuseRate: 0,
-        alertQualityScore: 0,  // PHASE 6.2: Add quality score
+        alertQualityScore: 0, 
         recentTrends: []
       };
 
@@ -606,7 +604,7 @@ export class DashboardService {
   }
 
   /**
-   * PHASE 6.2: Get alert quality metrics for a specific region - REAL S3 DATA
+   * Get alert quality metrics for a specific region - REAL S3 DATA
    */
   async getAlertQualityMetrics(regionId: string): Promise<any> {
     this.logger.log(`Fetching REAL alert quality metrics for region: ${regionId} from S3`);
@@ -657,7 +655,7 @@ export class DashboardService {
   }
 
   /**
-   * PHASE 6.2: Get alert quality trends over time - REAL S3 DATA
+   * Get alert quality trends over time - REAL S3 DATA
    */
   async getAlertQualityTrends(regionId?: string, days: number = 30): Promise<any> {
     this.logger.log(`Fetching REAL alert quality trends${regionId ? ` for region: ${regionId}` : ''} from S3`);
@@ -755,7 +753,7 @@ export class DashboardService {
   }
 
   /**
-   * PHASE 6.2: Compare clustering vs threshold-based system performance - REAL S3 DATA
+   * Compare clustering vs threshold-based system performance - REAL S3 DATA
    */
   async getSystemPerformanceComparison(regionId?: string, days: number = 30): Promise<any> {
     this.logger.log(`Fetching REAL system performance comparison from S3`);
@@ -861,8 +859,6 @@ export class DashboardService {
       throw new Error(`Failed to track performance for region ${regionId}: ${error.message}`);
     }
   }
-
-  // PHASE 6.3: System Integration Testing Methods
 
   /**
    * Run quick system integration test - REAL AWS Step Functions
@@ -1335,14 +1331,14 @@ export class DashboardService {
       const totalImages = input.limit || 1;
 
       return {
-        jobId: exec.executionArn,
+        jobId: exec.executionArn || exec.id,
         // Attempt to get region info from input, with fallbacks
         regionId: input.regionId || input.name || 'N/A',
         regionName: input.regionName || input.name || 'Unknown Region',
         status: jobStatus,
         progress: progress,
-        startTime: exec.startDate.toISOString(),
-        endTime: exec.stopDate ? exec.stopDate.toISOString() : undefined,
+        startTime: exec.startTime || new Date().toISOString(),
+        endTime: exec.endTime || undefined,
         // The analysis is for one image at a time per execution
         totalImages: totalImages,
         processedImages: jobStatus === 'COMPLETED' ? totalImages : 0,

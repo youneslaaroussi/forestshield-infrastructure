@@ -590,7 +590,7 @@ Resources:
                   "SelectOptimalK": {
                     "Type": "Task",
                     "Resource": "${KSelectorFunction.Arn}",
-                    "Comment": "PHASE 2.2: Dynamic K selection - Run multiple SageMaker jobs to find optimal K",
+                    "Comment": "Dynamic K selection - Run multiple SageMaker jobs to find optimal K",
                     "Parameters": {
                       "mode": "select-optimal-k",
                       "tile_id.$": "States.ArrayGetItem(States.StringSplit($.imageId, '_'), 0)",

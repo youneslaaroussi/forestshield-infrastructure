@@ -71,8 +71,6 @@ export class AWSSecurityService {
     this.logger.log('AWS Security Service initialized for credential management and audit logging');
   }
 
-  // PHASE 6.5.5: Security and Permissions Implementation
-
   async validateAWSCredentials(): Promise<{
     valid: boolean;
     accountId?: string;
@@ -278,8 +276,6 @@ export class AWSSecurityService {
 
     return Math.min(100, baseScore + bonusScore);
   }
-
-  // PHASE 6.5.5: Audit Logging Implementation
 
   async getAuditLogs(
     startTime?: Date,
