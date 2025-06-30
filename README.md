@@ -30,6 +30,11 @@
 
 ---
 
+**Objective:**  
+ForestShield aims to provide an automated, real-time, and scientifically robust platform for monitoring deforestation using satellite imagery and advanced machine learning. By leveraging cloud-native architecture and unsupervised learning, ForestShield delivers accurate, scalable, and actionable insights to help protect global forests.
+
+---
+
 ## 🌲 ForestShield: Automated Deforestation Monitoring Platform
 
 ![ForestShield Architecture](./assets/BannerImage.png)
@@ -147,7 +152,59 @@ For complete API documentation see [DOCS.md](./DOCS.md).
 
 ## 🏗️ Architecture Overview
 
-# TODO
+
+ForestShield represents a **state-of-the-art serverless architecture** that leverages the full power of AWS managed services to create an intelligent, scalable, and cost-effective deforestation monitoring system. The platform demonstrates advanced cloud-native design patterns and scientific computing at scale.
+
+![Pipeline](./assets/elbow_method.png)
+
+### 🎯 **Core Architectural Principles**
+
+- **100% Serverless**: Zero server management, automatic scaling, pay-per-use pricing
+- **Event-Driven**: Asynchronous processing with decoupled microservices
+- **ML-First**: Machine learning integrated throughout the data pipeline
+- **Real-Time**: Live monitoring with WebSocket connections and instant alerts
+- **Multi-Region**: Geographically aware processing with region-specific ML models
+
+### 🧠 **ML Pipeline**
+
+The system implements sophisticated **unsupervised machine learning** using K-means clustering on scientifically-derived vegetation indices:
+
+#### **NDVI Calculation**
+```latex
+NDVI = \frac{(NIR - Red)}{(NIR + Red)}
+```
+- **NIR**: Near-Infrared Band (Sentinel-2 B08, 842nm)
+- **Red**: Red Band (Sentinel-2 B04, 665nm) 
+- **Range**: -1.0 to +1.0 (vegetation typically > 0.2)
+
+#### **5-Dimensional Feature Engineering**
+Each pixel becomes a feature vector: `[NDVI, Red_Reflectance, NIR_Reflectance, Latitude, Longitude]`
+
+#### **Automated K-Selection via Elbow Method**
+```python
+# Sum of Squared Errors optimization
+SSE = Σ(k=1 to K) Σ(x∈Cluster_k) ||x - centroid_k||²
+```
+
+![SageMaker K-means Clustering Results](./assets/feature_distributions.png)
+
+**Performance Optimization:**  
+The `SearchImagesHandler` Lambda (Java) is **optimized with AWS Lambda SnapStart**, dramatically reducing cold start latency for image discovery operations. This ensures rapid, on-demand access to satellite imagery and exemplifies the use of cutting-edge AWS serverless technology.
+
+---
+
+### 🏛️ **Step Functions Orchestration**
+
+![Step Functions Workflow](./assets/stepfunctions_graph%20(1).png)
+
+---
+
+**🏆 This architecture demonstrates AWS best practices for:**
+- Serverless-first design with event-driven processing
+- ML/AI integration with scientific computing
+- Real-time data processing and visualization  
+- Cost-optimized scalable infrastructure
+- Enterprise security and compliance patterns
 
 ---
 
@@ -191,8 +248,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **ESA Sentinel-2** for satellite imagery
 - **AWS** for cloud infrastructure
-- **Element 84** for STAC API services on AWS
 - **Open source community** for tools and libraries
+
+---
+
+## Citations
+
+Methods applied based on research:
+
+- [Detecting deforestation in the Amazon rainforest using unsupervised K-means clustering on satellite imagery](./https://developers.arcgis.com/python/latest/samples/detecting-deforestation-using-kmeans-clustering-on-sentinel-imagery/)
+- [Md Jelas I, Zulkifley MA, Abdullah M and Spraggon M (2024) Deforestation detection using deep learning-based semantic segmentation techniques: a systematic review. Front. For. Glob. Change 7:1300060. doi: 10.3389/ffgc.2024.1300060](./https://www.frontiersin.org/journals/forests-and-global-change/articles/10.3389/ffgc.2024.1300060/full)
 
 ---
 

@@ -1328,6 +1328,9 @@ Resources:
                   - ce:GetUsageForecast
                   - sagemaker:ListTrainingJobs
                   - sagemaker:DescribeTrainingJob
+                  - cloudtrail:LookupEvents
+                  - cloudtrail:GetTrailStatus
+                  - cloudtrail:DescribeTrails
                 Resource: '*'
               - Effect: Allow
                 Action:

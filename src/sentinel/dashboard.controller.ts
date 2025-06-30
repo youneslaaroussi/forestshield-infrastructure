@@ -278,9 +278,14 @@ export class DashboardController {
     }
 
     const cronExpression = startAnalysisDto?.cronExpression || '*/30 * * * *'; // Default: every 30 minutes
-    
+  
+    // Update region status to ACTIVE
+    const updatedRegion = await this.dashboardService.updateRegion(regionId, {
+      status: RegionStatus.ACTIVE
+    });
+
     // Start the cron job using QueueService
-    await this.queueService.startRegionAnalysis(
+    this.queueService.startRegionAnalysis(
       regionId,
       cronExpression,
       {
@@ -290,11 +295,6 @@ export class DashboardController {
       },
       startAnalysisDto?.triggerImmediate || false
     );
-
-    // Update region status to ACTIVE
-    const updatedRegion = await this.dashboardService.updateRegion(regionId, {
-      status: RegionStatus.ACTIVE
-    });
 
     this.logger.log(`✅ Interval analysis started for region ${regionId} with schedule: ${cronExpression}`);
     
